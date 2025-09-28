@@ -1,22 +1,39 @@
-from __future__ import annotations 
+from __future__ import annotations
 import os
-from pathlib import Path
+import sys
 import base64
 import re
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
-# --- allow "src/edge_analysis" imports on Streamlit Cloud ---
-import sys
-from pathlib import Path as _P
-_ROOT = _P(__file__).resolve().parent
+
+# --- make "src/edge_analysis" importable on Streamlit Cloud ---
+_ROOT = Path(__file__).resolve().parent
 _SRC = _ROOT / "src"
 if _SRC.exists():
     sys.path.insert(0, str(_SRC))
-# ------------------------------------------------------------
+# --------------------------------------------------------------
 
 
 # ───────────────────────────── Page config / assets ───────────────────────────
-ASSETS_DIR = Path(__file__).resolve().parents[3] / "assets"
+# Be robust about where /assets lives (local vs Streamlit Cloud)
+def _find_assets_dir() -> Path:
+    candidates = [
+        _ROOT / "assets",
+        (_ROOT.parent / "assets"),
+        Path("assets").resolve(),
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            pass
+    # Fallback (won't exist, but avoids crashes)
+    return _ROOT / "assets"
+
+ASSETS_DIR = _find_assets_dir()
 FAVICON = ASSETS_DIR / "edge_favicon.png"
 PAGE_ICON = str(FAVICON) if FAVICON.exists() else None
 
@@ -26,13 +43,25 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",  # start expanded
 )
-# Force custom favicon
-st.markdown(
-    f"""
-    <link rel="shortcut icon" href="data:image/png;base64,{base64.b64encode(open(str(FAVICON), "rb").read()).decode()}">
-    """,
-    unsafe_allow_html=True
-)
+
+# Force custom favicon (override Streamlit's)
+if FAVICON.exists():
+    try:
+        favicon_b64 = base64.b64encode(FAVICON.read_bytes()).decode()
+        st.markdown(
+            f"""
+            <link rel="shortcut icon" href="data:image/png;base64,{favicon_b64}">
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        # Don't break the app if something odd happens; just use default
+        pass
+else:
+    # Optional: show a tiny, non-blocking hint in dev
+    # st.warning("⚠️ Custom favicon not found; using default Streamlit icon.")
+    pass
+
 
 # ───────────────────────────── Secrets helper ─────────────────────────────────
 def _secret_or_env(key: str, default=None):
@@ -158,13 +187,13 @@ def main() -> None:
     inject_global_css()
     inject_header(theme_choice.lower())  # logo
 
-    # Force sidebar always open
+    # Force sidebar always open & hide collapse button
     st.markdown(
         """
         <style>
         [data-testid="stSidebarNav"] {display: none;}
         [data-testid="stSidebarCloseButton"] {display: none;}
-        [data-testid="stSidebarCollapseButton"] {display: none;} /* hide « button */
+        [data-testid="stSidebarCollapseButton"] {display: none;}
         [data-testid="stSidebar"] {transform: none !important; visibility: visible !important;}
         </style>
         """,
@@ -238,5 +267,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
