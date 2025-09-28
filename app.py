@@ -26,6 +26,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",  # start expanded
 )
+# Force custom favicon
+st.markdown(
+    f"""
+    <link rel="shortcut icon" href="data:image/png;base64,{base64.b64encode(open(str(FAVICON), "rb").read()).decode()}">
+    """,
+    unsafe_allow_html=True
+)
 
 # ───────────────────────────── Secrets helper ─────────────────────────────────
 def _secret_or_env(key: str, default=None):
@@ -231,4 +238,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
