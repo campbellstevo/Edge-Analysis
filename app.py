@@ -5,6 +5,15 @@ import base64
 import re
 import pandas as pd
 import streamlit as st
+# --- allow "src/edge_analysis" imports on Streamlit Cloud ---
+import sys
+from pathlib import Path as _P
+_ROOT = _P(__file__).resolve().parent
+_SRC = _ROOT / "src"
+if _SRC.exists():
+    sys.path.insert(0, str(_SRC))
+# ------------------------------------------------------------
+
 
 # ───────────────────────────── Page config / assets ───────────────────────────
 ASSETS_DIR = Path(__file__).resolve().parents[3] / "assets"
@@ -222,3 +231,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
