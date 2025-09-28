@@ -1,0 +1,7 @@
+streamlit>=1.30
+pandas
+numpy
+altair
+python-dateutil
+requests
+notion-client
