@@ -39,7 +39,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Force custom favicon
+# Force custom favicon (works around Streamlit tab icon)
 if FAVICON.exists():
     try:
         favicon_b64 = base64.b64encode(FAVICON.read_bytes()).decode()
@@ -111,7 +111,6 @@ from edge_analysis.ui.tabs import render_all_tabs, generate_overall_stats
 @st.cache_data(show_spinner=True)
 def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
     if not (token and dbid):
-        # Soft hint shown in Dashboard only when no creds present
         return pd.DataFrame()
 
     raw = load_trades_from_notion(token, dbid)
@@ -121,19 +120,16 @@ def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
     df = raw.copy()
     df.columns = [c.strip() for c in df.columns]
 
-    # numeric coercions
     if "Closed RR" in df.columns:
         df["Closed RR"] = df["Closed RR"].apply(parse_closed_rr)
     if "PnL" in df.columns:
         df["PnL"] = pd.to_numeric(df["PnL"], errors="coerce")
 
-    # datetime & derived
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df["DayName"] = df["Date"].dt.day_name()
         df["Hour"] = df["Date"].dt.hour
 
-    # normalized fields
     df["Instrument"] = df["Pair"].apply(infer_instrument) if "Pair" in df.columns else "Unknown"
     df["Session Norm"] = df.get("Session", pd.Series(index=df.index, dtype=object)).apply(normalize_session)
 
@@ -155,13 +151,11 @@ def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
     else:
         df["Entry Confluence List"] = [[] for _ in range(len(df))]
 
-    # outcome
     df["Outcome"] = df.apply(
         lambda r: classify_outcome_from_fields(r.get("Result"), r.get("Closed RR"), r.get("PnL")),
         axis=1,
     )
 
-    # stars, risk, duration, accounts
     if "Rating" in df.columns:
         df["Stars"] = df["Rating"].apply(lambda s: s.count("⭐") if isinstance(s, str) else None)
     if "Risk Management" in df.columns:
@@ -172,7 +166,6 @@ def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
     if "Account" in df.columns:
         df["Account Group"] = df["Account"].apply(normalize_account_group)
 
-    # keep likely real trades
     has_date = df.get("Date").notna() if "Date" in df.columns else pd.Series(False, index=df.index)
     has_signal = (
         df.get("PnL").notna()
@@ -183,29 +176,19 @@ def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
 
     return df[has_date & has_signal].copy()
 
-# ───────────────────────────── Settings page (per-session creds) ──────────────
+# ───────────────────────────── Settings page ────────────────────────────────
 def render_settings_page():
     st.title("🔧 Settings")
     st.write("Use your **own Notion credentials** for this session only. These are not saved to the server.")
 
-    # Prefill from current session/query/secrets (masked)
     current_token = _runtime_secret("NOTION_TOKEN")
     current_dbid = _runtime_secret("DATABASE_ID")
 
     c1, c2 = st.columns(2)
     with c1:
-        notion_token = st.text_input(
-            "Notion Token",
-            value="" if not current_token else current_token,
-            type="password",
-            help="Paste your Notion internal integration token (starts with 'secret_' or 'ntn_').",
-        )
+        notion_token = st.text_input("Notion Token", value="" if not current_token else current_token, type="password")
     with c2:
-        database_id = st.text_input(
-            "Database ID",
-            value="" if not current_dbid else current_dbid,
-            help="32-char Notion database/page ID (no dashes).",
-        )
+        database_id = st.text_input("Database ID", value="" if not current_dbid else current_dbid)
 
     a, b, c = st.columns([1,1,2])
     with a:
@@ -225,37 +208,49 @@ def render_settings_page():
     st.markdown("---")
     st.caption("Tip: you can also prefill via URL query params: `?notion_token=...&database_id=...`")
 
-# ───────────────────────────── App (Dashboard) ────────────────────────────────
+# ───────────────────────────── Dashboard ────────────────────────────────
 def render_dashboard():
-    # theme + header
-    theme_choice = st.sidebar.selectbox(
-        "Theme", ["Light", "Dark"], index=0 if st.session_state.get("ui_theme", "light") == "light" else 1
-    )
-    from edge_analysis.ui.theme import apply_theme, inject_global_css, inject_header  # (reimport safe)
+    theme_choice = st.sidebar.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state.get("ui_theme", "light") == "light" else 1)
+    from edge_analysis.ui.theme import apply_theme, inject_global_css, inject_header
     styler = apply_theme(theme_choice.lower())
     st.session_state["ui_theme"] = theme_choice.lower()
     inject_global_css()
     inject_header(theme_choice.lower())
 
-    # Force sidebar always open & hide collapse button
-    st.markdown(
-        """
+    # Sidebar fixes (black text for Navigation always)  ⟵ PATCH #1
+    sidebar_fix_css = """
         <style>
         [data-testid="stSidebarNav"] {display: none;}
         [data-testid="stSidebarCloseButton"] {display: none;}
         [data-testid="stSidebarCollapseButton"] {display: none;}
         [data-testid="stSidebar"] {transform: none !important; visibility: visible !important;}
+        /* Force black writing for navigation labels */
+        [data-testid="stSidebar"] h2, 
+        [data-testid="stSidebar"] label, 
+        [data-testid="stSidebar"] div, 
+        [data-testid="stSidebar"] span { color: #000 !important; }
         </style>
-        """,
-        unsafe_allow_html=True
-    )
+    """
+    st.markdown(sidebar_fix_css, unsafe_allow_html=True)
 
-    # Resolve credentials (session/query/secrets/env)
     token = _runtime_secret("NOTION_TOKEN")
     dbid = _runtime_secret("DATABASE_ID")
 
     with st.spinner("Fetching trades from Notion…"):
         df = load_live_df(token, dbid)
+
+    # Move Live Notion Connected right under header logo  ⟵ PATCH #2
+    if token and dbid:
+        st.markdown(
+            """
+            <div style="text-align:center; margin-top:-14px; margin-bottom:20px;">
+              <span style="color:#4800ff; font-weight:800; font-size:22px;">
+                Live Notion Connected
+              </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     if not (token and dbid):
         st.warning("Add Notion credentials in **Settings** to load your data.")
@@ -264,7 +259,6 @@ def render_dashboard():
         st.info("No data yet. Add trades, adjust filters, or check credentials.")
         return
 
-    # filters
     header_color = "#000" if theme_choice == "Light" else "#fff"
     st.sidebar.markdown(f"<h3 style='color:{header_color}'>Filters</h3>", unsafe_allow_html=True)
 
@@ -279,7 +273,6 @@ def render_dashboard():
     sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
     sel_sess = st.sidebar.selectbox("Session", sess_opts, 0)
 
-    # filtering mask (no Account filter)
     mask = pd.Series(True, index=df.index)
     if sel_inst != "All":
         mask &= (df["Instrument"] == sel_inst)
@@ -291,10 +284,8 @@ def render_dashboard():
     f = df[mask].copy()
     f["PnL_from_RR"] = f["Closed RR"].fillna(0.0)
 
-    # KPI
     stats = generate_overall_stats(f)
 
-    # Avg Closed RR only from wins
     if "Closed RR" in f.columns:
         wins_only = f[f["Outcome"] == "Win"]
         avg_rr_wins = float(wins_only["Closed RR"].mean()) if not wins_only.empty else 0.0
@@ -318,12 +309,10 @@ def render_dashboard():
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div class='spacer-12'></div>", unsafe_allow_html=True)
 
-    # Tabs
     render_all_tabs(f, df, styler, show_light_table)
 
-# ───────────────────────────── Router (Dashboard / Settings) ──────────────────
+# ───────────────────────────── Router ────────────────────────────────
 def main() -> None:
-    # Simple page switcher in sidebar
     st.sidebar.markdown("## Navigation")
     page = st.sidebar.radio("Go to", ["Dashboard", "Settings"], index=0)
 
