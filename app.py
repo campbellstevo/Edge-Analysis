@@ -5,6 +5,7 @@ import base64
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+from urllib.parse import urlencode  # NEW
 
 # ---------------------------- import path for src/ ----------------------------
 _ROOT = Path(__file__).resolve().parent
@@ -451,7 +452,7 @@ def render_connect_page():
             "These are **not** saved on any server."
         )
 
-        # --- NEW: Visual walkthrough (replaces old quick guide) ---
+        # --- Visual walkthrough ---
         with st.expander("Visual walkthrough", expanded=True):
             st.markdown(
                 """
@@ -537,6 +538,90 @@ def render_connect_page():
         st.caption("Tip: you can also prefill via URL query params: `?notion_token=...&database_id=...`")
         st.markdown('</div>', unsafe_allow_html=True)
 
+# -------------------------- Mobile gear utilities (NEW) -----------------------
+def _read_mobile_open() -> bool:
+    v = _get_query_param("mobile_settings") or "0"
+    return str(v) == "1"
+
+def _mobile_url(open_state: bool) -> str:
+    """Build a URL that toggles the mobile settings bar via query params."""
+    try:
+        params = dict(st.query_params)
+    except Exception:
+        params = dict(st.experimental_get_query_params())
+    params["mobile_settings"] = "1" if open_state else "0"
+    return "?" + urlencode(params, doseq=True)
+
+def _inject_mobile_css_and_gear(layout_mode: str):
+    """
+    If Mobile Layout: hide Streamlit's sidebar, show big gear in top-left,
+    and style the top bar container. Desktop: do nothing.
+    """
+    if layout_mode != "mobile":
+        return
+
+    st.markdown("""
+    <style>
+    /* Hide the Streamlit sidebar entirely in Mobile Layout */
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="stAppViewContainer"] > .main { padding-left: 0 !important; }
+
+    /* Big floating gear button (always visible in Mobile Layout) */
+    .ea-gear {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 9999;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      border: 2px solid #000;
+      background: #fff;
+      color: #000;
+      font-size: 30px;
+      line-height: 1;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    }
+
+    /* Top settings bar container styles */
+    .ea-topbar-wrap {
+      width: 100%;
+      background: #ffffff;
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+      box-shadow: 0 8px 16px rgba(0,0,0,0.08);
+      position: relative; /* not fixed; pushes content down */
+      padding: 12px 12px 8px;
+      margin-top: 4px;
+      border-radius: 10px;
+    }
+
+    .ea-topbar-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    @media (max-width: 480px) {
+      .ea-topbar-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Make labels bold in the top bar for clarity */
+    .ea-topbar-wrap [data-testid="stSelectbox"] label,
+    .ea-topbar-wrap [data-testid="stRadio"] label,
+    .ea-topbar-wrap [data-testid="stTextInput"] label {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Gear link that toggles the top bar open/closed
+    gear_link = _mobile_url(open_state=not _read_mobile_open())
+    st.markdown(f'<a class="ea-gear" href="{gear_link}" title="Settings">⚙</a>', unsafe_allow_html=True)
+
 # -------------------------------- Dashboard -----------------------------------
 def render_dashboard():
     # Purple accent banner text
@@ -569,6 +654,10 @@ def render_dashboard():
     inject_header("light")
     inject_soft_bg()  # <<< unified soft background
 
+    layout_mode = st.session_state.get("layout_mode", "desktop")
+    mobile = layout_mode == "mobile"
+    mobile_open = _read_mobile_open()
+
     token = _runtime_secret("NOTION_TOKEN")
     dbid = _runtime_secret("DATABASE_ID")
 
@@ -584,42 +673,91 @@ def render_dashboard():
         st.info("No data yet. Add trades, adjust filters, or check credentials.")
         return
 
-    # ---------------- Sidebar Filters (button-style dropdowns) -----------------
-    st.sidebar.markdown("### Filters")
-
+    # ---------- Build options (used by both desktop sidebar and mobile top bar) ----------
     instruments = sorted(df["Instrument"].dropna().unique().tolist())
     instruments = [i for i in instruments if i != "DUMMY ROW"]
 
-    # Display label mapping: Gold -> GOLD (value still 'Gold')
     def _inst_label(v: str) -> str:
         return "GOLD" if v == "Gold" else v
 
     inst_opts = ["All"] + instruments
-    sel_inst = st.sidebar.selectbox(
-        "Instrument",
-        inst_opts,
-        index=0,
-        format_func=_inst_label,
-        key="filters_inst_select",
-    )
-
     em_opts = ["All"] + MODEL_SET
-    sel_em = st.sidebar.selectbox(
-        "Entry Model",
-        em_opts,
-        index=0,
-        format_func=lambda x: x,
-        key="filters_em_select",
-    )
-
     sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
-    sel_sess = st.sidebar.selectbox(
-        "Session",
-        sess_opts,
-        index=0,
-        format_func=lambda x: x,
-        key="filters_sess_select",
-    )
+
+    # ---------------- Sidebar Filters (desktop only) ---------------------------
+    if not mobile:
+        st.sidebar.markdown("### Filters")
+        sel_inst = st.sidebar.selectbox(
+            "Instrument",
+            inst_opts,
+            index=0,
+            format_func=_inst_label,
+            key="filters_inst_select",
+        )
+        sel_em = st.sidebar.selectbox(
+            "Entry Model",
+            em_opts,
+            index=0,
+            format_func=lambda x: x,
+            key="filters_em_select",
+        )
+        sel_sess = st.sidebar.selectbox(
+            "Session",
+            sess_opts,
+            index=0,
+            format_func=lambda x: x,
+            key="filters_sess_select",
+        )
+    else:
+        # Mobile: don't render sidebar; use session values (default to "All")
+        sel_inst = st.session_state.get("filters_inst_select", "All")
+        sel_em = st.session_state.get("filters_em_select", "All")
+        sel_sess = st.session_state.get("filters_sess_select", "All")
+
+        # Render the top bar with the SAME filter widgets (same keys) when open
+        if mobile_open:
+            st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
+            with st.container():
+                st.markdown('<div class="ea-topbar-wrap">', unsafe_allow_html=True)
+                st.markdown('<div class="ea-topbar-grid">', unsafe_allow_html=True)
+
+                c1, c2 = st.columns(2, gap="small")
+                with c1:
+                    sel_inst = st.selectbox(
+                        "Instrument",
+                        inst_opts,
+                        index=inst_opts.index(sel_inst) if sel_inst in inst_opts else 0,
+                        format_func=_inst_label,
+                        key="filters_inst_select",
+                    )
+                with c2:
+                    sel_sess = st.selectbox(
+                        "Session",
+                        sess_opts,
+                        index=sess_opts.index(sel_sess) if sel_sess in sess_opts else 0,
+                        format_func=lambda x: x,
+                        key="filters_sess_select",
+                    )
+
+                c3 = st.columns(1)[0]
+                with c3:
+                    sel_em = st.selectbox(
+                        "Entry Model",
+                        em_opts,
+                        index=em_opts.index(sel_em) if sel_em in em_opts else 0,
+                        format_func=lambda x: x,
+                        key="filters_em_select",
+                    )
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                # Close helper
+                close_url = _mobile_url(open_state=False)
+                st.markdown(
+                    f'<div style="margin-top:8px;"><a href="{close_url}" style="font-weight:600; text-decoration:none;">Close settings ▲</a></div>',
+                    unsafe_allow_html=True
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------------- Apply Filters -------------------------------------------
     mask = pd.Series(True, index=df.index)
@@ -664,8 +802,7 @@ def render_dashboard():
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div class='spacer-12'></div>", unsafe_allow_html=True)
 
-    # Tabs (charts/tables). Any selectboxes inside will also pick up the global
-    # CSS so they render like button dropdowns without a text caret.
+    # Tabs (charts/tables). Any selectboxes inside will also pick up the global CSS.
     render_all_tabs(f, df, styler, show_light_table)
 
 # --------------------------------- Router -------------------------------------
@@ -680,7 +817,6 @@ def main() -> None:
     _inject_dropdown_css()
 
     st.sidebar.markdown("## Settings")
-    # radios -> selectboxes (already in your version) so they look like dropdowns with our chevron
     page = st.sidebar.selectbox(
         "Page",
         ["Dashboard", "Connect Notion"],
@@ -697,6 +833,9 @@ def main() -> None:
     # Keep session flags as before
     st.session_state["layout_index"] = 1 if layout_choice == "Mobile Layout" else 0
     st.session_state["layout_mode"] = "mobile" if layout_choice == "Mobile Layout" else "desktop"
+
+    # NEW: If Mobile Layout, hide the native sidebar and show the gear.
+    _inject_mobile_css_and_gear(st.session_state["layout_mode"])
 
     if page == "Connect Notion":
         render_connect_page()
