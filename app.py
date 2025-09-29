@@ -171,22 +171,6 @@ def _inject_dropdown_css():
         unsafe_allow_html=True,
     )
 
-def _hide_sidebar_for_mobile():
-    """Pure-CSS hide for sidebar + reclaim space on mobile layout."""
-    st.markdown(
-        """
-        <style>
-        /* Hide sidebar and the hamburger */
-        [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] {
-            display: none !important;
-        }
-        /* Reduce side padding so content fits better on phones */
-        .block-container { padding-left: 0.75rem; padding-right: 0.75rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 # ---------------------------- data loading/cleaning ---------------------------
 @st.cache_data(show_spinner=True)
 def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
@@ -534,7 +518,7 @@ def render_connect_page():
         st.markdown('</div>', unsafe_allow_html=True)
 
 # -------------------------------- Dashboard -----------------------------------
-def render_dashboard(mobile: bool):
+def render_dashboard():
     # Purple accent banner text
     st.markdown(
         f"""
@@ -548,7 +532,7 @@ def render_dashboard(mobile: bool):
             color: var(--brand);
         }}
 
-        /* Ensure sidebar is light and text is black on Dashboard (desktop only visible) */
+        /* Ensure sidebar is light and text is black on Dashboard */
         [data-testid="stSidebar"] {{
             background: #ffffff !important;
         }}
@@ -559,10 +543,6 @@ def render_dashboard(mobile: bool):
         """,
         unsafe_allow_html=True,
     )
-
-    # Hide sidebar + tighten padding for phones
-    if mobile:
-        _hide_sidebar_for_mobile()
 
     styler = apply_theme()   # locked to light
     inject_global_css()
@@ -583,85 +563,42 @@ def render_dashboard(mobile: bool):
         st.info("No data yet. Add trades, adjust filters, or check credentials.")
         return
 
-    # ---------------- Filters (sidebar on desktop, inline on mobile) ----------
-    if mobile:
-        # Inline layout toggle so you can switch back on phones
-        colA, colB = st.columns([1, 2])
-        with colA:
-            inline_layout = st.selectbox("Layout", ["Mobile Layout", "Desktop Layout"], index=0, key="inline_layout")
-            # Keep main logic in sync
-            st.session_state["layout_mode"] = "mobile" if inline_layout == "Mobile Layout" else "desktop"
+    # ---------------- Sidebar Filters (button-style dropdowns) -----------------
+    st.sidebar.markdown("### Filters")
 
-        st.markdown("### Filters")
+    instruments = sorted(df["Instrument"].dropna().unique().tolist())
+    instruments = [i for i in instruments if i != "DUMMY ROW"]
 
-        instruments = sorted(df["Instrument"].dropna().unique().tolist())
-        instruments = [i for i in instruments if i != "DUMMY ROW"]
+    # Display label mapping: Gold -> GOLD (value still 'Gold')
+    def _inst_label(v: str) -> str:
+        return "GOLD" if v == "Gold" else v
 
-        def _inst_label(v: str) -> str:
-            return "GOLD" if v == "Gold" else v
+    inst_opts = ["All"] + instruments
+    sel_inst = st.sidebar.selectbox(
+        "Instrument",
+        inst_opts,
+        index=0,
+        format_func=_inst_label,
+        key="filters_inst_select",
+    )
 
-        inst_opts = ["All"] + instruments
-        sel_inst = st.selectbox(
-            "Instrument",
-            inst_opts,
-            index=0,
-            format_func=_inst_label,
-            key="filters_inst_select_inline",
-        )
+    em_opts = ["All"] + MODEL_SET
+    sel_em = st.sidebar.selectbox(
+        "Entry Model",
+        em_opts,
+        index=0,
+        format_func=lambda x: x,
+        key="filters_em_select",
+    )
 
-        em_opts = ["All"] + MODEL_SET
-        sel_em = st.selectbox(
-            "Entry Model",
-            em_opts,
-            index=0,
-            format_func=lambda x: x,
-            key="filters_em_select_inline",
-        )
-
-        sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
-        sel_sess = st.selectbox(
-            "Session",
-            sess_opts,
-            index=0,
-            format_func=lambda x: x,
-            key="filters_sess_select_inline",
-        )
-
-    else:
-        st.sidebar.markdown("### Filters")
-
-        instruments = sorted(df["Instrument"].dropna().unique().tolist())
-        instruments = [i for i in instruments if i != "DUMMY ROW"]
-
-        def _inst_label(v: str) -> str:
-            return "GOLD" if v == "Gold" else v
-
-        inst_opts = ["All"] + instruments
-        sel_inst = st.sidebar.selectbox(
-            "Instrument",
-            inst_opts,
-            index=0,
-            format_func=_inst_label,
-            key="filters_inst_select",
-        )
-
-        em_opts = ["All"] + MODEL_SET
-        sel_em = st.sidebar.selectbox(
-            "Entry Model",
-            em_opts,
-            index=0,
-            format_func=lambda x: x,
-            key="filters_em_select",
-        )
-
-        sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
-        sel_sess = st.sidebar.selectbox(
-            "Session",
-            sess_opts,
-            index=0,
-            format_func=lambda x: x,
-            key="filters_sess_select",
-        )
+    sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
+    sel_sess = st.sidebar.selectbox(
+        "Session",
+        sess_opts,
+        index=0,
+        format_func=lambda x: x,
+        key="filters_sess_select",
+    )
 
     # ---------------- Apply Filters -------------------------------------------
     mask = pd.Series(True, index=df.index)
@@ -722,6 +659,7 @@ def main() -> None:
     _inject_dropdown_css()
 
     st.sidebar.markdown("## Settings")
+    # radios -> selectboxes (already in your version) so they look like dropdowns with our chevron
     page = st.sidebar.selectbox(
         "Page",
         ["Dashboard", "Connect Notion"],
@@ -729,29 +667,21 @@ def main() -> None:
         key="nav_page",
     )
 
-    # Sidebar control (primary), but allow inline override when mobile hides sidebar
-    sidebar_layout_choice = st.sidebar.selectbox(
+    layout_choice = st.sidebar.selectbox(
         "Layout",
         ["Desktop Layout", "Mobile Layout"],
         index=_detect_default_layout_index(),
         key="layout_choice",
     )
-
-    # If inline layout switch (in mobile view) set a value, prefer that
-    layout_mode_ss = st.session_state.get("layout_mode")
-    if layout_mode_ss in ("mobile", "desktop"):
-        layout_choice = "Mobile Layout" if layout_mode_ss == "mobile" else "Desktop Layout"
-    else:
-        layout_choice = sidebar_layout_choice
-
+    # Keep session flags as before
     st.session_state["layout_index"] = 1 if layout_choice == "Mobile Layout" else 0
     st.session_state["layout_mode"] = "mobile" if layout_choice == "Mobile Layout" else "desktop"
-    mobile = (layout_choice == "Mobile Layout")
 
     if page == "Connect Notion":
         render_connect_page()
     else:
-        render_dashboard(mobile)
+        render_dashboard()
 
 if __name__ == "__main__":
     main()
+
