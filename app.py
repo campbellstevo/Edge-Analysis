@@ -42,6 +42,35 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- Mobile-only: make tabs wrap into multiple rows ---
+st.markdown("""
+<style>
+/* Only affect small screens */
+@media (max-width: 768px) {
+
+  /* Wrap the tab list instead of horizontal scrolling */
+  div[data-baseweb="tab-list"] {
+    flex-wrap: wrap !important;
+    overflow: visible !important;   /* reveal all rows */
+    gap: 8px 12px !important;       /* row/column spacing */
+  }
+
+  /* Keep each tab as an inline pill; allow wrapping cleanly */
+  div[data-baseweb="tab"] {
+    flex: 0 1 auto !important;
+    margin: 0 !important;
+  }
+
+  /* Remove/neutralize any fade masks some themes add at edges */
+  div[data-baseweb="tab-list"]::before,
+  div[data-baseweb="tab-list"]::after {
+    content: none !important;
+    display: none !important;
+  }
+}
+</style>
+""", unsafe_allow_html=True)
+
 # Tab favicon (extra nudge)
 if FAVICON.exists():
     try:
