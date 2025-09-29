@@ -219,6 +219,76 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- PATCH: zero-scroll on mobile with ALL columns visible ---
+st.markdown("""
+<style>
+@media (max-width: 480px) {
+  /* Tighter global scale & gutters */
+  html { font-size: 12.5px; }                 /* smaller base */
+  .block-container { 
+    padding-left: 0.45rem !important; 
+    padding-right: 0.45rem !important; 
+    padding-top: 0.4rem !important; 
+  }
+
+  /* KPI tiles smaller */
+  .stMetric { padding: 4px 6px !important; }
+  div[data-testid="stMetricValue"] { font-size: 20px !important; }
+  div[data-testid="stMetricDelta"] { font-size: 11px !important; }
+
+  /* Card titles / section headings */
+  .entry-card h2 { font-size: 17px !important; margin: 0 0 4px 0 !important; }
+  h2, h3 { font-size: 19px !important; margin: 8px 0 6px 0 !important; }
+
+  /* Fit ALL table columns without horizontal scroll */
+  table.entry-model-table,
+  table.session-perf-table,
+  table.day-perf-table {
+    width: 100% !important;
+    table-layout: fixed !important;          /* force equal distribution */
+    font-size: 10.5px !important;            /* <-- main squeeze */
+    border-spacing: 0 !important;
+    min-width: 0 !important;                 /* allow shrinking */
+  }
+
+  /* Cells: tiny padding, wrap anywhere */
+  .entry-model-table thead th,
+  .entry-model-table tbody td,
+  .session-perf-table thead th,
+  .session-perf-table tbody td,
+  .day-perf-table thead th,
+  .day-perf-table tbody td {
+    padding: 4px 4px !important;             /* tighter rows */
+    line-height: 1.05 !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+    white-space: normal !important;
+    hyphens: auto !important;
+  }
+
+  /* Slightly bias first column wider for long labels (Entry_Model/Session/Day) */
+  .entry-model-table colgroup col:first-child,
+  .session-perf-table colgroup col:first-child,
+  .day-perf-table colgroup col:first-child { width: 42% !important; }
+
+  /* If there is no <colgroup>, approximate via nth-child widths */
+  .entry-model-table th:nth-child(1), .entry-model-table td:nth-child(1),
+  .session-perf-table th:nth-child(1), .session-perf-table td:nth-child(1),
+  .day-perf-table th:nth-child(1), .day-perf-table td:nth-child(1) { width: 42% !important; }
+  .entry-model-table th:nth-child(n+2), .entry-model-table td:nth-child(n+2),
+  .session-perf-table th:nth-child(n+2), .session-perf-table td:nth-child(n+2),
+  .day-perf-table th:nth-child(n+2), .day-perf-table td:nth-child(n+2) { width: auto !important; }
+
+  /* Tabs a bit smaller */
+  .stTabs [data-baseweb="tab"] { padding: 5px 8px !important; }
+  .stTabs [data-baseweb="tab"] p { font-size: 13px !important; margin: 0 !important; }
+
+  /* Reduce vertical gaps so tables land higher */
+  .spacer-12 { height: 6px !important; }
+}
+</style>
+""", unsafe_allow_html=True)
+
 # Tab favicon (extra nudge)
 if FAVICON.exists():
     try:
