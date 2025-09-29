@@ -21,7 +21,7 @@ def show_light_table(df: pd.DataFrame, hide_index: bool = True):
     html = f"<div class='table-wrap'><table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------ 
 # CLEAN, BRANDED CARD + TABLE RENDERERS (use CSS injected in app.py)
 # ------------------------------------------------------------------------------
 
@@ -34,7 +34,6 @@ def _fmt_num(v, d: int = 2):
 def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Performance"):
     """
     Render a simple, brand-aligned entry model performance table.
-
     Required columns: ["Entry_Model", "Trades", "Win %", "BE %", "Loss %"]
     """
     expected = ["Entry_Model", "Trades", "Win %", "BE %", "Loss %"]
@@ -64,10 +63,12 @@ def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Perform
     st.markdown(f"""
     <div class="entry-card">
       <h2>{title}</h2>
-      <table class="entry-model-table">
-        <thead><tr>{header_html}</tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="entry-model-table">
+          <thead><tr>{header_html}</tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -102,10 +103,12 @@ def render_session_performance_table(df: pd.DataFrame, title: str = "Session Per
     st.markdown(f"""
     <div class="entry-card">
       <h2>{title}</h2>
-      <table class="entry-model-table">
-        <thead><tr>{header_html}</tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="entry-model-table">
+          <thead><tr>{header_html}</tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -142,14 +145,16 @@ def render_day_performance_table(df: pd.DataFrame, title: str = "Day Performance
     st.markdown(f"""
     <div class="entry-card">
       <h2>{title}</h2>
-      <table class="entry-model-table">
-        <thead><tr>{header_html}</tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="entry-model-table">
+          <thead><tr>{header_html}</tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------ 
 # HEADER (centered logo instead of big title)
 # ------------------------------------------------------------------------------
 
@@ -175,7 +180,7 @@ def inject_header():
         unsafe_allow_html=True,
     )
 
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------ 
 # SIDEBAR CONTROLS (open/close buttons styled black)
 # ------------------------------------------------------------------------------
 
