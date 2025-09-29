@@ -20,6 +20,135 @@ def show_light_table(df: pd.DataFrame, hide_index: bool = True):
     tbody = "".join(rows)
     html = f"<div class='table-wrap'><table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
+
+# ------------------------------------------------------------------------------
+# CLEAN, BRANDED CARD + TABLE RENDERERS (use CSS injected in app.py)
+# ------------------------------------------------------------------------------
+
+def _fmt_int(v):  # small shared formatters
+    return "" if pd.isna(v) else f"{int(v)}"
+
+def _fmt_num(v, d: int = 2):
+    return "" if pd.isna(v) else f"{float(v):.{d}f}"
+
+def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Performance"):
+    """
+    Render a simple, brand-aligned entry model performance table.
+
+    Required columns: ["Entry_Model", "Trades", "Win %", "BE %", "Loss %"]
+    """
+    expected = ["Entry_Model", "Trades", "Win %", "BE %", "Loss %"]
+    if df is None or df.empty or any(c not in df.columns for c in expected):
+        return
+
+    header_html = (
+        '<th class="text">Entry_Model</th>'
+        '<th class="num">Trades</th>'
+        '<th class="num">Win %</th>'
+        '<th class="num">BE %</th>'
+        '<th class="num">Loss %</th>'
+    )
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append(
+            "<tr>"
+            f'<td class="text">{r.get("Entry_Model","")}</td>'
+            f'<td class="num">{_fmt_int(r.get("Trades"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("Win %"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("BE %"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("Loss %"))}</td>'
+            "</tr>"
+        )
+
+    st.markdown(f"""
+    <div class="entry-card">
+      <h2>{title}</h2>
+      <table class="entry-model-table">
+        <thead><tr>{header_html}</tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_session_performance_table(df: pd.DataFrame, title: str = "Session Performance"):
+    """
+    Required columns: ["Session", "Trades", "Win %", "BE %", "Loss %"]
+    """
+    expected = ["Session", "Trades", "Win %", "BE %", "Loss %"]
+    if df is None or df.empty or any(c not in df.columns for c in expected):
+        return
+
+    header_html = (
+        '<th class="text">Session</th>'
+        '<th class="num">Trades</th>'
+        '<th class="num">Win %</th>'
+        '<th class="num">BE %</th>'
+        '<th class="num">Loss %</th>'
+    )
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append(
+            "<tr>"
+            f'<td class="text">{r.get("Session","")}</td>'
+            f'<td class="num">{_fmt_int(r.get("Trades"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("Win %"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("BE %"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("Loss %"))}</td>'
+            "</tr>"
+        )
+
+    st.markdown(f"""
+    <div class="entry-card">
+      <h2>{title}</h2>
+      <table class="entry-model-table">
+        <thead><tr>{header_html}</tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_day_performance_table(df: pd.DataFrame, title: str = "Day Performance (Mon–Fri)"):
+    """
+    Required columns: ["Day", "Trades", "Win %", "BE %", "Loss %", "Avg RR"]
+    """
+    expected = ["Day", "Trades", "Win %", "BE %", "Loss %", "Avg RR"]
+    if df is None or df.empty or any(c not in df.columns for c in expected):
+        return
+
+    header_html = (
+        '<th class="text">Day</th>'
+        '<th class="num">Trades</th>'
+        '<th class="num">Win %</th>'
+        '<th class="num">BE %</th>'
+        '<th class="num">Loss %</th>'
+        '<th class="num">Avg RR</th>'
+    )
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append(
+            "<tr>"
+            f'<td class="text">{r.get("Day","")}</td>'
+            f'<td class="num">{_fmt_int(r.get("Trades"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("Win %"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("BE %"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("Loss %"))}</td>'
+            f'<td class="num">{_fmt_num(r.get("Avg RR"))}</td>'
+            "</tr>"
+        )
+
+    st.markdown(f"""
+    <div class="entry-card">
+      <h2>{title}</h2>
+      <table class="entry-model-table">
+        <thead><tr>{header_html}</tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+    </div>
+    """, unsafe_allow_html=True)
+
 # ------------------------------------------------------------------------------
 # HEADER (centered logo instead of big title)
 # ------------------------------------------------------------------------------
