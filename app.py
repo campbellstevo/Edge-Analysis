@@ -171,6 +171,23 @@ def _inject_dropdown_css():
         unsafe_allow_html=True,
     )
 
+def inject_soft_bg():
+    """Single source of truth for the soft purple-white background used across pages."""
+    st.markdown(
+        """
+        <style>
+          :root { --ea-bg-soft: #f5f6fb; }
+          /* Main content & header use the soft background */
+          [data-testid="stAppViewContainer"] { background: var(--ea-bg-soft) !important; }
+          header[data-testid="stHeader"], [data-testid="stToolbar"] { background: var(--ea-bg-soft) !important; }
+          /* Sidebar remains white for contrast */
+          [data-testid="stSidebar"] { background: #ffffff !important; }
+          [data-testid="stSidebar"] * { color: #0f172a !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # ---------------------------- data loading/cleaning ---------------------------
 @st.cache_data(show_spinner=True)
 def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
@@ -249,20 +266,13 @@ def render_connect_page():
     styler = apply_theme()   # locked to light
     inject_global_css()
     inject_header("light")
+    inject_soft_bg()  # <<< unified soft background
 
     # Scoped light overrides for this page
     st.markdown(
         f"""
         <style>
         :root {{ --brand: {BRAND_PURPLE}; }}
-
-        /* Keep the whole app light on this page as well */
-        [data-testid="stAppViewContainer"],
-        header[data-testid="stHeader"],
-        [data-testid="stToolbar"],
-        [data-testid="stSidebar"] {{
-            background: #ffffff !important;
-        }}
 
         /* Sidebar text and content readable on light */
         [data-testid="stSidebar"] * {{
@@ -403,10 +413,10 @@ def render_connect_page():
         }}
         /* WRAP FIX: let the text block shrink and wrap inside the card */
         .ea-step > div {{
-          min-width: 0;                   /* allow flex child to shrink */
-          white-space: normal;            /* ensure multi-line layout */
-          overflow-wrap: anywhere;        /* modern wrapping for long tokens */
-          word-break: break-word;         /* fallback wrapping */
+          min-width: 0;                   
+          white-space: normal;            
+          overflow-wrap: anywhere;        
+          word-break: break-word;         
         }}
         .ea-mono {{ 
           background: #eef2ff; padding: 2px 6px; border-radius: 6px; 
@@ -557,6 +567,7 @@ def render_dashboard():
     styler = apply_theme()   # locked to light
     inject_global_css()
     inject_header("light")
+    inject_soft_bg()  # <<< unified soft background
 
     token = _runtime_secret("NOTION_TOKEN")
     dbid = _runtime_secret("DATABASE_ID")
@@ -658,17 +669,34 @@ def render_dashboard():
     render_all_tabs(f, df, styler, show_light_table)
 
 # --------------------------------- Router -------------------------------------
+def _detect_default_layout_index() -> int:
+    layout_qp = (_get_query_param("layout") or "").lower()
+    if layout_qp in {"m", "mobile", "phone"}:
+        return 1
+    return 0
+
 def main() -> None:
     # (NEW) Global dropdown styling injected BEFORE any selectboxes are drawn.
     _inject_dropdown_css()
 
     st.sidebar.markdown("## Settings")
+    # radios -> selectboxes (already in your version) so they look like dropdowns with our chevron
     page = st.sidebar.selectbox(
         "Page",
         ["Dashboard", "Connect Notion"],
         index=0,
         key="nav_page",
     )
+
+    layout_choice = st.sidebar.selectbox(
+        "Layout",
+        ["Desktop Layout", "Mobile Layout"],
+        index=_detect_default_layout_index(),
+        key="layout_choice",
+    )
+    # Keep session flags as before
+    st.session_state["layout_index"] = 1 if layout_choice == "Mobile Layout" else 0
+    st.session_state["layout_mode"] = "mobile" if layout_choice == "Mobile Layout" else "desktop"
 
     if page == "Connect Notion":
         render_connect_page()
