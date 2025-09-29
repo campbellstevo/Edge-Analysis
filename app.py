@@ -421,6 +421,12 @@ def render_connect_page():
         }}
         .ea-list {{ margin: 6px 0 0 0; padding-left: 18px; }}
         .ea-kbd {{ padding: 1px 6px; border: 1px solid #e5e7eb; border-bottom-width: 2px; border-radius: 6px; background: #fff; font-weight: 700; }}
+
+        /* >>> PATCH: make the 32-character ID segment purple & bold <<< */
+        .ea-id {{
+          color: var(--brand);
+          font-weight: 800;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -457,7 +463,11 @@ def render_connect_page():
                   <div class="ea-steps">
                     <div class="ea-step"><span class="ea-num">1</span><div>Open your database. If it’s inline, choose <strong>Open as page</strong>.</div></div>
                     <div class="ea-step"><span class="ea-num">2</span><div>Click <strong>Share</strong> → <strong>Connect to / Add connections</strong> → choose your integration (e.g., <em>Edge Analysis</em>).</div></div>
-                    <div class="ea-step"><span class="ea-num">3</span><div>Click the <strong>⋯</strong> (top-right) → <strong>Copy link</strong>. The URL looks like:<br><span class="ea-mono">https://www.notion.so/My-DB-Name-12345678abcd1234ef567890abcd1234?v=...</span><br>The 32-character part before <span class="ea-mono">?v=</span> is your <strong>Database ID</strong> (dashes are fine).</div></div>
+                    <div class="ea-step"><span class="ea-num">3</span><div>
+                      Click the <strong>⋯</strong> (top-right) → <strong>Copy link</strong>. The URL looks like:<br>
+                      <span class="ea-mono">https://www.notion.so/My-DB-Name-<span class="ea-id">12345678abcd1234ef567890abcd1234</span>?v=...</span><br>
+                      The 32-character part before <span class="ea-mono">?v=</span> is your <strong>Database ID</strong> (dashes are fine).
+                    </div></div>
                   </div>
 
                   <div class="ea-check">
@@ -684,4 +694,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
