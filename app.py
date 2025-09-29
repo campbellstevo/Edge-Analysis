@@ -92,6 +92,23 @@ st.markdown("""
 /* Align numbers to the right, first column left */
 .entry-model-table td.num, .entry-model-table th.num { text-align: right; }
 .entry-model-table td.text, .entry-model-table th.text { text-align: left; }
+
+/* --- EXTRA PATCH: keep tables inside cards clean on mobile --- */
+.entry-card .table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.entry-model-table {
+  table-layout: fixed;    /* prevent one column from stretching everything */
+  min-width: 520px;       /* keeps layout usable on scroll */
+}
+
+.entry-model-table th,
+.entry-model-table td {
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -343,12 +360,14 @@ def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Perform
     table_html = f"""
     <div class="entry-card">
       <h2>{title}</h2>
-      <table class="entry-model-table">
-        <thead><tr>{header_html}</tr></thead>
-        <tbody>
-          {''.join(rows_html)}
-        </tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="entry-model-table">
+          <thead><tr>{header_html}</tr></thead>
+          <tbody>
+            {''.join(rows_html)}
+          </tbody>
+        </table>
+      </div>
     </div>
     """
 
