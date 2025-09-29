@@ -1,4 +1,4 @@
-from __future__ import annotations  
+from __future__ import annotations
 import os
 import sys
 import base64
@@ -122,7 +122,8 @@ def _inject_dropdown_css():
             --ea-brand: {BRAND_PURPLE};
         }}
         /* Unify ALL selectboxes across app (sidebar + main) */
-        [data-baseweb="select"] input {{
+        /* PATCH: restrict to the select's internal search input so normal text inputs remain editable */
+        [data-baseweb="select"] input[aria-autocomplete="list"] {{
             caret-color: transparent !important;   /* no flashing text caret */
             pointer-events: none !important;       /* not editable */
             user-select: none !important;
@@ -155,6 +156,15 @@ def _inject_dropdown_css():
             background-size: 16px 16px;
             opacity: 0.9;
             pointer-events: none;
+        }}
+
+        /* PATCH SAFETY: ensure normal text/password/textarea inputs stay fully interactive */
+        [data-testid="stTextInput"] input,
+        [data-testid="stPassword"] input,
+        [data-testid="stTextArea"] textarea {{
+            pointer-events: auto !important;
+            opacity: 1 !important;
+            width: 100% !important;
         }}
         </style>
         """,
@@ -374,17 +384,37 @@ def render_connect_page():
           background: #ffffff; color: #0f172a; text-decoration: none; font-weight: 600;
         }}
         .ea-link:hover {{ background: #f9fafb; }}
-        .ea-steps {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 10px; }}
+        .ea-steps {{ 
+          display: grid; 
+          grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); 
+          gap: 10px; 
+          align-items: stretch;
+        }}
         .ea-step {{
           background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px;
           padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start;
+          /* WRAP FIX: prevent overhanging text */
+          overflow: hidden; 
         }}
         .ea-num {{
           width: 26px; height: 26px; flex: 0 0 26px; border-radius: 8px;
           display: inline-flex; align-items: center; justify-content: center;
           font-weight: 800; background: #eef2ff; color: var(--brand);
         }}
-        .ea-mono {{ background: #eef2ff; padding: 2px 6px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }}
+        /* WRAP FIX: let the text block shrink and wrap inside the card */
+        .ea-step > div {{
+          min-width: 0;                   /* allow flex child to shrink */
+          white-space: normal;            /* ensure multi-line layout */
+          overflow-wrap: anywhere;        /* modern wrapping for long tokens */
+          word-break: break-word;         /* fallback wrapping */
+        }}
+        .ea-mono {{ 
+          background: #eef2ff; padding: 2px 6px; border-radius: 6px; 
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; 
+          /* WRAP FIX: allow long URLs/IDs to break mid-token */
+          overflow-wrap: anywhere; 
+          word-break: break-all;
+        }}
         .ea-check, .ea-troubleshoot {{
           margin-top: 8px; padding: 10px 12px; border-radius: 12px; 
           border: 1px solid #e5e7eb; background: #ffffff;
@@ -654,4 +684,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
