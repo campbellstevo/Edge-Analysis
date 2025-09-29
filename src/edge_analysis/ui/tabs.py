@@ -4,6 +4,13 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 
+# NEW: import the three clean renderers from components
+from edge_analysis.ui.components import (
+    render_entry_model_table,
+    render_session_performance_table,
+    render_day_performance_table,
+)
+
 CONFLUENCE_OPTIONS = ["DIV", "Sweep", "DIV & Sweep"]
 
 # ---- Completion-aware helpers (non-breaking) --------------------------------
@@ -129,11 +136,10 @@ def _growth_tab(f: pd.DataFrame, df_all: pd.DataFrame, styler):
     g = g[g['__Date'].notna()].copy()
     if g.empty:
         with st.expander("Debug: date parsing", expanded=False):
-            st.write("Tried column:", date_col)
             try:
                 st.write("Sample raw values:", f[date_col].head(5).tolist())
             except Exception:
-                st.write("Could not sample raw values for:", date_col)
+                pass
         st.info("No dated rows yet. Add some trades or adjust filters.")
         st.markdown('</div>', unsafe_allow_html=True); return
 
@@ -222,7 +228,7 @@ def _growth_tab(f: pd.DataFrame, df_all: pd.DataFrame, styler):
 # ------------------------------ Other tabs -----------------------------------
 def _entry_models_tab(f: pd.DataFrame, show_table):
     st.markdown('<div class="section">', unsafe_allow_html=True)
-    st.markdown("### Entry Model Performance")
+    # Title comes from the renderer; don't duplicate here
     if f.empty:
         st.info("No trades for current filters.")
     else:
@@ -237,14 +243,15 @@ def _entry_models_tab(f: pd.DataFrame, show_table):
                 r = outcome_rates_from(group)
                 rates.append(dict(Entry_Model=model, Trades=len(group), **{"Win %": r['win_rate'], "BE %": r['be_rate'], "Loss %": r['loss_rate']}))
             if rates:
-                show_table(pd.DataFrame(rates).sort_values('Win %', ascending=False))
+                entry_model_df = pd.DataFrame(rates).sort_values('Win %', ascending=False)
+                render_entry_model_table(entry_model_df, title="Entry Model Performance")
             else:
                 st.info("No counted outcomes yet.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 def _sessions_tab(f: pd.DataFrame, show_table):
     st.markdown('<div class="section">', unsafe_allow_html=True)
-    st.markdown("### Session Performance")
+    # Title comes from the renderer
     if f.empty or 'Session Norm' not in f.columns or f['Session Norm'].isna().all():
         st.info("No session data.")
     else:
@@ -253,13 +260,14 @@ def _sessions_tab(f: pd.DataFrame, show_table):
         for sess, g in counted.groupby('Session Norm'):
             r = outcome_rates_from(g)
             rates.append(dict(Session=sess, Trades=len(g), **{"Win %": r['win_rate'], "BE %": r['be_rate'], "Loss %": r['loss_rate']}))
-        show_table(pd.DataFrame(rates).sort_values('Win %', ascending=False))
+        session_df = pd.DataFrame(rates).sort_values('Win %', ascending=False)
+        render_session_performance_table(session_df, title="Session Performance")
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------- Days-only (Mon–Fri), no hours/duration in this tab ----------
 def _time_days_tab(f: pd.DataFrame, show_table):
     st.markdown('<div class="section">', unsafe_allow_html=True)
-    st.markdown("### Day Performance (Mon–Fri)")
+    # Title comes from the renderer
     counted = f[f['Outcome'].isin(['Win','BE','Loss'])]
 
     # Prefer DayName if present; else fall back to a 'Day' column
@@ -284,7 +292,8 @@ def _time_days_tab(f: pd.DataFrame, show_table):
         "Avg RR": round(g['Closed RR'].mean(), 2) if 'Closed RR' in g.columns else None
     })).reset_index().rename(columns={'__Day': 'Day'}))
 
-    show_table(perf.sort_values('Day'))
+    day_df = perf.sort_values('Day')
+    render_day_performance_table(day_df, title="Day Performance (Mon–Fri)")
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------- (Unused for now) Confluence & Coach tabs kept for later ----------
