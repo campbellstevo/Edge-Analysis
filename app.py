@@ -106,7 +106,6 @@ def _inject_dropdown_css():
     Global: make all Streamlit selectboxes look like non-editable button dropdowns,
     hide the text caret, and use a bold chevron icon (not a triangle).
     """
-    # Inline SVG chevron (dark ink). NOTE: # must be %23 inside data-URL.
     chevron_svg = (
         "data:image/svg+xml;utf8,"
         "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>"
@@ -122,7 +121,6 @@ def _inject_dropdown_css():
             --ea-brand: {BRAND_PURPLE};
         }}
         /* Unify ALL selectboxes across app (sidebar + main) */
-        /* PATCH: restrict to the select's internal search input so normal text inputs remain editable */
         [data-baseweb="select"] input[aria-autocomplete="list"] {{
             caret-color: transparent !important;   /* no flashing text caret */
             pointer-events: none !important;       /* not editable */
@@ -132,13 +130,11 @@ def _inject_dropdown_css():
             min-width: 0 !important;
         }}
         [data-baseweb="select"] [role="combobox"],
-        [data-baseweb="select"] > div {{
-            cursor: pointer !important;
-        }}
-        /* Hide Streamlit/BaseWeb built-in dropdown icon to avoid double-arrows */
-        [data-baseweb="select"] svg {{
-            display: none !important;
-        }}
+        [data-baseweb="select"] > div {{ cursor: pointer !important; }}
+
+        /* Hide built-in dropdown svg to avoid double icons */
+        [data-baseweb="select"] svg {{ display: none !important; }}
+
         /* Add our own bold chevron */
         [data-baseweb="select"] > div {{
             position: relative !important;
@@ -149,8 +145,7 @@ def _inject_dropdown_css():
             right: 12px;
             top: 50%;
             transform: translateY(-50%);
-            width: 16px;
-            height: 16px;
+            width: 16px; height: 16px;
             background-image: url("{chevron_svg}");
             background-repeat: no-repeat;
             background-size: 16px 16px;
@@ -158,7 +153,7 @@ def _inject_dropdown_css():
             pointer-events: none;
         }}
 
-        /* PATCH SAFETY: ensure normal text/password/textarea inputs stay fully interactive */
+        /* Keep text/password/textarea interactive */
         [data-testid="stTextInput"] input,
         [data-testid="stPassword"] input,
         [data-testid="stTextArea"] textarea {{
@@ -194,7 +189,7 @@ def _inject_mobile_css():
             width: 100% !important;
           }
 
-          /* Sidebar: make it usable on phones */
+          /* Base sidebar styling for mobile; width tuned for phones */
           [data-testid="stSidebar"] { width: 86vw !important; min-width: 86vw !important; }
           @media (max-width: 480px){
             [data-testid="stSidebar"] { width: 92vw !important; min-width: 92vw !important; }
@@ -206,6 +201,35 @@ def _inject_mobile_css():
 
           /* Hide Streamlit “Made with/Deploy” badges on tiny screens */
           .viewerBadge_container__1QSob, .stAppDeployButton { display: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+def _apply_mobile_sidebar(open: bool):
+    """
+    Turn the sidebar into a slide-in drawer on mobile.
+    Closed by default; toggled with buttons in the main area.
+    """
+    st.markdown(
+        f"""
+        <style>
+          /* Drawer behavior only below 1025px; desktop unaffected */
+          @media (max-width: 1024px) {{
+            [data-testid="stSidebar"] {{
+              position: fixed;
+              left: 0; top: 0; height: 100vh;
+              z-index: 1000;
+              box-shadow: 0 10px 30px rgba(0,0,0,.12);
+              background: #fff !important;
+              transform: translateX({ '0' if open else '-105%' });
+              transition: transform .25s ease;
+            }}
+            /* Push main content back to full width */
+            [data-testid="stAppViewContainer"] > .main {{
+              margin-left: 0 !important;
+            }}
+          }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -302,181 +326,68 @@ def render_connect_page():
     """
     Light settings page (same look as Dashboard).
     """
-    # Ensure same theme shell and header as dashboard
     styler = apply_theme()   # locked to light
     inject_global_css()
     inject_header("light")
     inject_soft_bg()  # <<< unified soft background
 
-    # Scoped light overrides for this page
     st.markdown(
         f"""
         <style>
         :root {{ --brand: {BRAND_PURPLE}; }}
+        [data-testid="stSidebar"] * {{ color: #0f172a !important; }}
+        .connect-scope, .connect-scope * {{ color: #0f172a !important; }}
 
-        /* Sidebar text and content readable on light */
-        [data-testid="stSidebar"] * {{
-            color: #0f172a !important;
-        }}
-
-        /* Settings wrapper scope */
-        .connect-scope, .connect-scope * {{
-            color: #0f172a !important;
-        }}
-
-        /* Inputs (force light text and border even on focus/hover) */
         .connect-scope [data-testid="stTextInput"] input,
         .connect-scope [data-testid="stPassword"] input,
         .connect-scope [data-testid="stTextArea"] textarea {{
-            background: #ffffff !important;
-            color: #0f172a !important;
-            border: 1px solid #e5e7eb !important;
-            border-radius: 10px !important;
-            box-shadow: none !important;
+            background: #ffffff !important; color: #0f172a !important;
+            border: 1px solid #e5e7eb !important; border-radius: 10px !important; box-shadow: none !important;
         }}
         .connect-scope [data-testid="stTextInput"] input:focus,
         .connect-scope [data-testid="stPassword"] input:focus,
         .connect-scope [data-testid="stTextArea"] textarea:focus {{
             border: 1px solid var(--brand) !important;
-            box-shadow: 0 0 0 2px rgba(72,0,255,0.12) !important;
-            outline: none !important;
+            box-shadow: 0 0 0 2px rgba(72,0,255,0.12) !important; outline: none !important;
         }}
-        .connect-scope ::placeholder {{
-            color: #64748b !important;
-            opacity: 1 !important;
-        }}
-        /* Eye icon area */
-        .connect-scope [data-testid="stTextInput"] button {{
-            background: #ffffff !important;
-            border-left: 1px solid #e5e7eb !important;
-        }}
+        .connect-scope ::placeholder {{ color: #64748b !important; opacity: 1 !important; }}
+        .connect-scope [data-testid="stTextInput"] button {{ background:#fff !important; border-left:1px solid #e5e7eb !important; }}
         .connect-scope [data-testid="stTextInput"] button svg {{ color:#0f172a !important; }}
 
-        /* Buttons */
         .connect-scope .stButton > button {{
-            background: #ffffff !important;
-            color: #0f172a !important;
-            border: 1px solid #e5e7eb !important;
-            border-radius: 12px !important;
-            padding: 0.5rem 1rem !important;
-            box-shadow: none !important;
-            cursor: pointer !important;
+            background:#fff !important; color:#0f172a !important; border:1px solid #e5e7eb !important;
+            border-radius:12px !important; padding:.5rem 1rem !important; box-shadow:none !important; cursor:pointer !important;
         }}
         .connect-scope .stButton > button:hover,
-        .connect-scope .stButton > button:focus {{
-            background: #f9fafb !important;
-            color: #0f172a !important;
-            border-color: #e5e7eb !important;
-        }}
+        .connect-scope .stButton > button:focus {{ background:#f9fafb !important; border-color:#e5e7eb !important; }}
 
-        /* Expander headers - light; open area stays white */
         .connect-scope [data-testid="stExpander"] > details {{
-            background: #ffffff !important;
-            border: 1px solid #e5e7eb !important;
-            border-radius: 12px !important;
-            overflow: hidden !important;
+            background:#fff !important; border:1px solid #e5e7eb !important; border-radius:12px !important; overflow:hidden !important;
         }}
         .connect-scope [data-testid="stExpander"] summary,
         .connect-scope [data-testid="stExpander"] div[role="button"] {{
-            background: #f3f4f6 !important;
-            color: #0f172a !important;
-            border-bottom: 1px solid #e5e7eb !important;
-            padding: .65rem .9rem !important;
+            background:#f3f4f6 !important; color:#0f172a !important; border-bottom:1px solid #e5e7eb !important; padding:.65rem .9rem !important;
         }}
-        .connect-scope [data-testid="stExpander"] > details[open] > div {{
-            background: #ffffff !important;
-            padding: .75rem .9rem !important;
-        }}
+        .connect-scope [data-testid="stExpander"] > details[open] > div {{ background:#fff !important; padding:.75rem .9rem !important; }}
 
-        /* Inline code pills in guide - light */
-        .connect-scope code {{
-            background: #eef2ff !important;
-            color: #0f172a !important;
-            padding: 2px 6px;
-            border-radius: 6px;
-        }}
+        .header-logo-img {{ transform: scale(0.7); transform-origin:center; margin-bottom:.25rem !important; }}
+        .css-1d391kg, .css-1kyxreq, .css-1avcm0n {{ background:transparent !important; }}
 
-        /* Success/info alerts readable */
-        .connect-scope .stAlert {{
-            background: #ecfdf5 !important;
-            border: 1px solid #bbf7d0 !important;
-            color: #064e3b !important;
-            border-radius: 12px !important;
-        }}
-        .connect-scope .stAlert * {{ color: #064e3b !important; }}
-
-        /* Smaller logo so content sits higher */
-        .header-logo-img {{
-            transform: scale(0.7);
-            transform-origin: center;
-            margin-bottom: 0.25rem !important;
-        }}
-
-        /* Kill stray legacy dark boxes */
-        .css-1d391kg, .css-1kyxreq, .css-1avcm0n {{
-            background: transparent !important;
-        }}
-
-        /***** Visual walkthrough styles *****/
         .ea-walk {{ font-size: 15.5px; line-height: 1.55; }}
-        .ea-walk h4 {{
-          margin: 0.75rem 0 0.5rem 0; 
-          font-size: 16px; 
-          font-weight: 800; 
-          color: #0f172a;
-        }}
-        .ea-quicklinks {{
-          display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 10px 0;
-        }}
-        .ea-link {{
-          display: inline-flex; align-items: center; gap: 6px;
-          padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 10px;
-          background: #ffffff; color: #0f172a; text-decoration: none; font-weight: 600;
-        }}
-        .ea-link:hover {{ background: #f9fafb; }}
-        .ea-steps {{ 
-          display: grid; 
-          grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); 
-          gap: 10px; 
-          align-items: stretch;
-        }}
-        .ea-step {{
-          background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px;
-          padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start;
-          /* WRAP FIX: prevent overhanging text */
-          overflow: hidden; 
-        }}
-        .ea-num {{
-          width: 26px; height: 26px; flex: 0 0 26px; border-radius: 8px;
-          display: inline-flex; align-items: center; justify-content: center;
-          font-weight: 800; background: #eef2ff; color: var(--brand);
-        }}
-        /* WRAP FIX: let the text block shrink and wrap inside the card */
-        .ea-step > div {{
-          min-width: 0;                   
-          white-space: normal;            
-          overflow-wrap: anywhere;        
-          word-break: break-word;         
-        }}
-        .ea-mono {{ 
-          background: #eef2ff; padding: 2px 6px; border-radius: 6px; 
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; 
-          /* WRAP FIX: allow long URLs/IDs to break mid-token */
-          overflow-wrap: anywhere; 
-          word-break: break-all;
-        }}
-        .ea-check, .ea-troubleshoot {{
-          margin-top: 8px; padding: 10px 12px; border-radius: 12px; 
-          border: 1px solid #e5e7eb; background: #ffffff;
-        }}
-        .ea-list {{ margin: 6px 0 0 0; padding-left: 18px; }}
-        .ea-kbd {{ padding: 1px 6px; border: 1px solid #e5e7eb; border-bottom-width: 2px; border-radius: 6px; background: #fff; font-weight: 700; }}
-
-        /* >>> PATCH: make the 32-character ID segment purple & bold <<< */
-        .ea-id {{
-          color: var(--brand);
-          font-weight: 800;
-        }}
+        .ea-walk h4 {{ margin:.75rem 0 .5rem 0; font-size:16px; font-weight:800; color:#0f172a; }}
+        .ea-quicklinks {{ display:flex; gap:8px; flex-wrap:wrap; margin:2px 0 10px 0; }}
+        .ea-link {{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border:1px solid #e5e7eb; border-radius:10px;
+                   background:#fff; color:#0f172a; text-decoration:none; font-weight:600; }}
+        .ea-link:hover {{ background:#f9fafb; }}
+        .ea-steps {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; align-items:stretch; }}
+        .ea-step {{ background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; display:flex; gap:10px; align-items:flex-start; overflow:hidden; }}
+        .ea-num {{ width:26px; height:26px; flex:0 0 26px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; font-weight:800; background:#eef2ff; color:var(--brand); }}
+        .ea-step > div {{ min-width:0; white-space:normal; overflow-wrap:anywhere; word-break:break-word; }}
+        .ea-mono {{ background:#eef2ff; padding:2px 6px; border-radius:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; overflow-wrap:anywhere; word-break:break-all; }}
+        .ea-check, .ea-troubleshoot {{ margin-top:8px; padding:10px 12px; border-radius:12px; border:1px solid #e5e7eb; background:#fff; }}
+        .ea-list {{ margin:6px 0 0 0; padding-left:18px; }}
+        .ea-kbd {{ padding:1px 6px; border:1px solid #e5e7eb; border-bottom-width:2px; border-radius:6px; background:#fff; font-weight:700; }}
+        .ea-id {{ color:var(--brand); font-weight:800; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -491,7 +402,6 @@ def render_connect_page():
             "These are **not** saved on any server."
         )
 
-        # --- NEW: Visual walkthrough (replaces old quick guide) ---
         with st.expander("Visual walkthrough", expanded=True):
             st.markdown(
                 """
@@ -579,26 +489,37 @@ def render_connect_page():
 
 # -------------------------------- Dashboard -----------------------------------
 def render_dashboard():
-    # Purple accent banner text
+    # Purple accent banner text + KPI grid styles
     st.markdown(
         f"""
         <style>
         :root {{ --brand: {BRAND_PURPLE}; }}
         .live-banner {{
-            text-align: center;
-            margin: -8px 0 16px 0;
-            font-weight: 800;
-            font-size: 22px;
-            color: var(--brand);
+            text-align: center; margin: -8px 0 16px 0;
+            font-weight: 800; font-size: 22px; color: var(--brand);
         }}
+        [data-testid="stSidebar"] {{ background: #ffffff !important; }}
+        [data-testid="stSidebar"] * {{ color: #0f172a !important; }}
 
-        /* Ensure sidebar is light and text is black on Dashboard */
-        [data-testid="stSidebar"] {{
-            background: #ffffff !important;
+        /* KPI grid responsive */
+        .kpi-grid {{
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 10px;
         }}
-        [data-testid="stSidebar"] * {{
-            color: #0f172a !important;
+        .kpi {{
+          background: #fff; border: 1px solid #e5e7eb; border-radius: 12px;
+          padding: 12px; min-height: 76px;
         }}
+        .kpi .label {{
+          font-size: 11px; font-weight: 700; color: #475569; letter-spacing: .02em; margin-bottom: 4px;
+        }}
+        .kpi .value {{
+          font-size: 20px; font-weight: 800; color: #0f172a;
+        }}
+        .spacer-12 {{ height: 12px; }}
+        /* Wrap everything in a scroll container as a safety for any wide charts/tables */
+        .ea-content-wrap {{ overflow-x: auto; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -607,7 +528,7 @@ def render_dashboard():
     styler = apply_theme()   # locked to light
     inject_global_css()
     inject_header("light")
-    inject_soft_bg()  # <<< unified soft background
+    inject_soft_bg()
 
     token = _runtime_secret("NOTION_TOKEN")
     dbid = _runtime_secret("DATABASE_ID")
@@ -624,44 +545,25 @@ def render_dashboard():
         st.info("No data yet. Add trades, adjust filters, or check credentials.")
         return
 
-    # ---------------- Sidebar Filters (button-style dropdowns) -----------------
+    # ---------------- Sidebar Filters -----------------
     st.sidebar.markdown("### Filters")
 
     instruments = sorted(df["Instrument"].dropna().unique().tolist())
     instruments = [i for i in instruments if i != "DUMMY ROW"]
 
-    # Display label mapping: Gold -> GOLD (value still 'Gold')
     def _inst_label(v: str) -> str:
         return "GOLD" if v == "Gold" else v
 
     inst_opts = ["All"] + instruments
-    sel_inst = st.sidebar.selectbox(
-        "Instrument",
-        inst_opts,
-        index=0,
-        format_func=_inst_label,
-        key="filters_inst_select",
-    )
+    sel_inst = st.sidebar.selectbox("Instrument", inst_opts, index=0, format_func=_inst_label, key="filters_inst_select")
 
     em_opts = ["All"] + MODEL_SET
-    sel_em = st.sidebar.selectbox(
-        "Entry Model",
-        em_opts,
-        index=0,
-        format_func=lambda x: x,
-        key="filters_em_select",
-    )
+    sel_em = st.sidebar.selectbox("Entry Model", em_opts, index=0, key="filters_em_select")
 
     sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
-    sel_sess = st.sidebar.selectbox(
-        "Session",
-        sess_opts,
-        index=0,
-        format_func=lambda x: x,
-        key="filters_sess_select",
-    )
+    sel_sess = st.sidebar.selectbox("Session", sess_opts, index=0, key="filters_sess_select")
 
-    # ---------------- Apply Filters -------------------------------------------
+    # ---------------- Apply Filters -------------------
     mask = pd.Series(True, index=df.index)
     if sel_inst != "All":
         mask &= (df["Instrument"] == sel_inst)
@@ -675,7 +577,7 @@ def render_dashboard():
 
     stats = generate_overall_stats(f)
 
-    # ---------------- KPIs / cards -------------------------------------------
+    # ---------------- KPIs / cards --------------------
     if "Closed RR" in f.columns:
         wins_only = f[f["Outcome"] == "Win"]
         avg_rr_wins = float(wins_only["Closed RR"].mean()) if not wins_only.empty else 0.0
@@ -697,16 +599,14 @@ def render_dashboard():
             if label == "TOTAL PNL (FROM RR)"
             else f"<div class='value'>{value}</div>"
         )
-        st.markdown(
-            f"<div class='kpi'><div class='label'>{label}</div>{value_html}</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div class='kpi'><div class='label'>{label}</div>{value_html}</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div class='spacer-12'></div>", unsafe_allow_html=True)
 
-    # Tabs (charts/tables). Any selectboxes inside will also pick up the global
-    # CSS so they render like button dropdowns without a text caret.
+    # Wrap the tab content in a scroll-safe container
+    st.markdown('<div class="ea-content-wrap">', unsafe_allow_html=True)
     render_all_tabs(f, df, styler, show_light_table)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # --------------------------------- Router -------------------------------------
 def _detect_default_layout_index() -> int:
@@ -716,17 +616,10 @@ def _detect_default_layout_index() -> int:
     return 0
 
 def main() -> None:
-    # (NEW) Global dropdown styling injected BEFORE any selectboxes are drawn.
     _inject_dropdown_css()
 
     st.sidebar.markdown("## Settings")
-    # radios -> selectboxes (already in your version) so they look like dropdowns with our chevron
-    page = st.sidebar.selectbox(
-        "Page",
-        ["Dashboard", "Connect Notion"],
-        index=0,
-        key="nav_page",
-    )
+    page = st.sidebar.selectbox("Page", ["Dashboard", "Connect Notion"], index=0, key="nav_page")
 
     layout_choice = st.sidebar.selectbox(
         "Layout",
@@ -734,13 +627,29 @@ def main() -> None:
         index=_detect_default_layout_index(),
         key="layout_choice",
     )
-    # Keep session flags as before
+
     st.session_state["layout_index"] = 1 if layout_choice == "Mobile Layout" else 0
     st.session_state["layout_mode"] = "mobile" if layout_choice == "Mobile Layout" else "desktop"
 
-    # (NEW) Inject mobile CSS when mobile layout is selected
+    # Mobile-only CSS & slide-in sidebar
     if layout_choice == "Mobile Layout":
         _inject_mobile_css()
+        if "_ea_sidebar_open" not in st.session_state:
+            st.session_state["_ea_sidebar_open"] = False  # closed by default
+        _apply_mobile_sidebar(st.session_state["_ea_sidebar_open"])
+
+        # Toggle buttons at top of page so content is visible without the sidebar
+        col_open, col_close = st.columns([1, 1])
+        with col_open:
+            if not st.session_state["_ea_sidebar_open"]:
+                if st.button("☰ Filters", key="ea_open_filters"):
+                    st.session_state["_ea_sidebar_open"] = True
+                    st.experimental_rerun()
+        with col_close:
+            if st.session_state["_ea_sidebar_open"]:
+                if st.button("✕ Close Filters", key="ea_close_filters"):
+                    st.session_state["_ea_sidebar_open"] = False
+                    st.experimental_rerun()
 
     if page == "Connect Notion":
         render_connect_page()
