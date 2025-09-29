@@ -42,6 +42,59 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- PATCH (1): Card + clean table CSS (added once, near top) ---
+st.markdown("""
+<style>
+/* Card container for the table */
+.entry-card {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 20px 24px;
+  box-shadow: 0 6px 22px rgba(0,0,0,0.06);
+}
+
+/* Title */
+.entry-card h2 {
+  margin: 0 0 10px 0;
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+/* Table basics */
+.entry-model-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 16px;
+}
+
+/* Header */
+.entry-model-table thead th {
+  text-align: left;
+  font-weight: 700;
+  background: #f6f7fb;
+  padding: 12px 10px;
+  border-bottom: 2px solid #4800ff; /* brand underline */
+}
+
+/* Body */
+.entry-model-table tbody td {
+  padding: 12px 10px;
+  border-bottom: 1px solid #eef0f5;
+}
+
+/* Subtle zebra for readability */
+.entry-model-table tbody tr:nth-child(even) td {
+  background: #fafbff;
+}
+
+/* Align numbers to the right, first column left */
+.entry-model-table td.num, .entry-model-table th.num { text-align: right; }
+.entry-model-table td.text, .entry-model-table th.text { text-align: left; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- Mobile-only: make tabs wrap into multiple rows ---
 st.markdown("""
 <style>
@@ -248,6 +301,58 @@ def inject_label_fix():
         """,
         unsafe_allow_html=True,
     )
+
+# --- PATCH (2): Helper to render a clean Entry Model table ---
+def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Performance"):
+    """
+    Render a simple, brand-aligned entry model performance table.
+
+    Required df columns: ["Entry_Model", "Trades", "Win %", "BE %", "Loss %"]
+    """
+    # Defensive: if df is empty or missing expected columns, render nothing
+    expected = ["Entry_Model", "Trades", "Win %", "BE %", "Loss %"]
+    if df is None or df.empty or any(col not in df.columns for col in expected):
+        return
+
+    def fmt_int(v):
+        return "" if pd.isna(v) else f"{int(v)}"
+
+    def fmt_num(v, decimals=2):
+        return "" if pd.isna(v) else f"{float(v):.{decimals}f}"
+
+    header_html = (
+        '<th class="text">Entry_Model</th>'
+        '<th class="num">Trades</th>'
+        '<th class="num">Win %</th>'
+        '<th class="num">BE %</th>'
+        '<th class="num">Loss %</th>'
+    )
+
+    rows_html = []
+    for _, r in df.iterrows():
+        rows_html.append(
+            "<tr>"
+            f'<td class="text">{r.get("Entry_Model","")}</td>'
+            f'<td class="num">{fmt_int(r.get("Trades"))}</td>'
+            f'<td class="num">{fmt_num(r.get("Win %"))}</td>'
+            f'<td class="num">{fmt_num(r.get("BE %"))}</td>'
+            f'<td class="num">{fmt_num(r.get("Loss %"))}</td>'
+            "</tr>"
+        )
+
+    table_html = f"""
+    <div class="entry-card">
+      <h2>{title}</h2>
+      <table class="entry-model-table">
+        <thead><tr>{header_html}</tr></thead>
+        <tbody>
+          {''.join(rows_html)}
+        </tbody>
+      </table>
+    </div>
+    """
+
+    st.markdown(table_html, unsafe_allow_html=True)
 
 # ---------------------------- data loading/cleaning ---------------------------
 @st.cache_data(show_spinner=True)
