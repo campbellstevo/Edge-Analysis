@@ -122,8 +122,7 @@ def _inject_dropdown_css():
             --ea-brand: {BRAND_PURPLE};
         }}
         /* Unify ALL selectboxes across app (sidebar + main) */
-        /* PATCH: restrict to the select's internal search input so normal text inputs remain editable */
-        [data-baseweb="select"] input[aria-autocomplete="list"] {{
+        [data-baseweb="select"] input {{
             caret-color: transparent !important;   /* no flashing text caret */
             pointer-events: none !important;       /* not editable */
             user-select: none !important;
@@ -156,48 +155,6 @@ def _inject_dropdown_css():
             background-size: 16px 16px;
             opacity: 0.9;
             pointer-events: none;
-        }}
-
-        /* PATCH SAFETY: ensure normal text/password/textarea inputs stay fully interactive */
-        [data-testid="stTextInput"] input,
-        [data-testid="stPassword"] input,
-        [data-testid="stTextArea"] textarea {{
-            pointer-events: auto !important;
-            opacity: 1 !important;
-            width: 100% !important;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-# --------- NEW: shrink sidebar only on small screens (e.g., iPhone) -----------
-def _shrink_sidebar_on_small_screens(width_px: int = 200):
-    st.markdown(
-        f"""
-        <style>
-        @media (max-width: 768px) {{
-          /* Sidebar container */
-          [data-testid="stSidebar"] {{
-            width: {width_px}px !important;
-            min-width: {width_px}px !important;
-          }}
-          /* Some Streamlit builds wrap inner content; ensure inner matches too */
-          [data-testid="stSidebar"] > div {{
-            width: {width_px}px !important;
-            min-width: {width_px}px !important;
-          }}
-
-          /* Shift main app view so it doesn't sit under the sidebar */
-          [data-testid="stAppViewContainer"] {{
-            margin-left: {width_px}px !important;
-          }}
-
-          /* Align the fixed header with the new sidebar width */
-          header[data-testid="stHeader"] {{
-            left: {width_px}px !important;
-            width: calc(100% - {width_px}px) !important;
-          }}
         }}
         </style>
         """,
@@ -670,8 +627,6 @@ def _detect_default_layout_index() -> int:
 def main() -> None:
     # (NEW) Global dropdown styling injected BEFORE any selectboxes are drawn.
     _inject_dropdown_css()
-    # (NEW) Shrink sidebar only on phones/tablets (keeps desktop unchanged)
-    _shrink_sidebar_on_small_screens(width_px=200)
 
     st.sidebar.markdown("## Settings")
     # radios -> selectboxes (already in your version) so they look like dropdowns with our chevron
@@ -699,3 +654,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
