@@ -171,6 +171,46 @@ def _inject_dropdown_css():
         unsafe_allow_html=True,
     )
 
+def _inject_mobile_css():
+    """Responsive tweaks for phone use; only injected when 'Mobile Layout' is selected."""
+    st.markdown(
+        """
+        <style>
+          /* Use full width and tighter padding on small screens */
+          .block-container { max-width: 100vw; padding: 12px 14px; }
+
+          /* Make selectboxes and inputs proper touch targets */
+          [data-baseweb="select"] > div { min-height: 44px; }
+          .stTextInput input, .stNumberInput input, .stDateInput input { min-height: 44px; }
+
+          /* Stack any column layouts vertically on narrow screens */
+          @media (max-width: 1024px){
+            [data-testid="stHorizontalBlock"] > div { width: 100% !important; }
+            [data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; }
+          }
+
+          /* Prevent content from being cut off by default max-width wrappers */
+          .stMarkdown, .stDataFrame, .stPlotlyChart, .stAltairChart, .stPyplot, .stMetric {
+            width: 100% !important;
+          }
+
+          /* Sidebar: make it usable on phones */
+          [data-testid="stSidebar"] { width: 86vw !important; min-width: 86vw !important; }
+          @media (max-width: 480px){
+            [data-testid="stSidebar"] { width: 92vw !important; min-width: 92vw !important; }
+          }
+
+          /* Reduce excessive gaps so more fits on screen */
+          .st-emotion-cache-ocqkz7, .stVerticalBlock { gap: 0.5rem !important; }
+          .st-emotion-cache-13ln4jf { padding: 0 !important; }
+
+          /* Hide Streamlit “Made with/Deploy” badges on tiny screens */
+          .viewerBadge_container__1QSob, .stAppDeployButton { display: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def inject_soft_bg():
     """Single source of truth for the soft purple-white background used across pages."""
     st.markdown(
@@ -697,6 +737,10 @@ def main() -> None:
     # Keep session flags as before
     st.session_state["layout_index"] = 1 if layout_choice == "Mobile Layout" else 0
     st.session_state["layout_mode"] = "mobile" if layout_choice == "Mobile Layout" else "desktop"
+
+    # (NEW) Inject mobile CSS when mobile layout is selected
+    if layout_choice == "Mobile Layout":
+        _inject_mobile_css()
 
     if page == "Connect Notion":
         render_connect_page()
