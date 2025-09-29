@@ -71,6 +71,21 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- Mobile-only: remove underline highlight under active tab (PATCH) ---
+st.markdown("""
+<style>
+@media (max-width: 768px) {
+  .stTabs [data-baseweb="tab-highlight"] { 
+    display: none !important; 
+  }
+  .stTabs [role="tab"][aria-selected="true"] {
+    border-bottom: none !important;
+    box-shadow: none !important;
+  }
+}
+</style>
+""", unsafe_allow_html=True)
+
 # Tab favicon (extra nudge)
 if FAVICON.exists():
     try:
