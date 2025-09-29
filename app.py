@@ -42,6 +42,69 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- PATCH (Mobile-fit): compact typography & spacing on small screens ---
+st.markdown("""
+<style>
+@media (max-width: 480px) {
+  /* tighter page padding */
+  .block-container {
+    padding-left: 0.6rem !important;
+    padding-right: 0.6rem !important;
+    padding-top: 0.5rem !important;
+  }
+
+  /* general type scale */
+  html { font-size: 14px; } /* down from ~16px */
+  body, p, span, div { line-height: 1.15; }
+
+  /* cards */
+  .entry-card { padding: 14px 14px; border-radius: 12px; }
+  .entry-card h2 { font-size: 20px; margin: 0 0 6px 0; }
+
+  /* tables */
+  table.entry-model-table,
+  table.session-perf-table,
+  table.day-perf-table {
+    font-size: 12px;                /* smaller text in tables */
+    table-layout: fixed;            /* prevents overflow */
+    width: 100%;
+  }
+  .entry-model-table thead th,
+  .entry-model-table tbody td,
+  .session-perf-table thead th,
+  .session-perf-table tbody td,
+  .day-perf-table thead th,
+  .day-perf-table tbody td {
+    padding: 8px 6px;               /* tighter rows */
+    line-height: 1.15;
+    word-break: break-word;
+    hyphens: auto;
+  }
+  /* optional: narrower numeric cols (2nd/3rd) */
+  .entry-model-table td:nth-child(2),
+  .session-perf-table td:nth-child(2),
+  .day-perf-table td:nth-child(2) { width: 64px; }
+  .entry-model-table td:nth-child(3),
+  .session-perf-table td:nth-child(3),
+  .day-perf-table td:nth-child(3) { width: 72px; }
+
+  /* Streamlit tabs smaller */
+  .stTabs [data-baseweb="tab"] { padding: 6px 10px; }
+  .stTabs [data-baseweb="tab"] p { font-size: 14px; margin: 0; }
+
+  /* KPI tiles */
+  div[data-testid="stMetricValue"] { font-size: 24px; }
+  div[data-testid="stMetricDelta"] { font-size: 12px; }
+  .stMetric { padding: 6px 8px; }
+
+  /* charts spacing (Altair/Plotly/Vega) */
+  .stAltairChart, .stPlotlyChart, .stVegaLiteChart {
+    margin-top: 4px; margin-bottom: 8px;
+  }
+}
+</style>
+""", unsafe_allow_html=True)
+
 # --- PATCH (1): Card + clean table CSS (added once, near top) ---
 st.markdown("""
 <style>
