@@ -171,46 +171,6 @@ def _inject_dropdown_css():
         unsafe_allow_html=True,
     )
 
-def _inject_mobile_css(hide_sidebar: bool = True):
-    """
-    Responsive tweaks for phone use, optionally hide the sidebar entirely.
-    """
-    st.markdown(
-        f"""
-        <style>
-          /* Use full width and tighter padding on small screens */
-          .block-container {{ max-width: 100vw; padding: 12px 14px; }}
-
-          /* Make selectboxes and inputs proper touch targets */
-          [data-baseweb="select"] > div {{ min-height: 44px; }}
-          .stTextInput input, .stNumberInput input, .stDateInput input {{ min-height: 44px; }}
-
-          /* Stack any column layouts vertically on narrow screens */
-          @media (max-width: 1024px){{
-            [data-testid="stHorizontalBlock"] > div {{ width: 100% !important; }}
-            [data-testid="column"] {{ width: 100% !important; flex: 1 1 100% !important; }}
-          }}
-
-          /* Prevent content from being cut off by default max-width wrappers */
-          .stMarkdown, .stDataFrame, .stPlotlyChart, .stAltairChart, .stPyplot, .stMetric {{
-            width: 100% !important;
-          }}
-
-          /* Reduce excessive gaps so more fits on screen */
-          .st-emotion-cache-ocqkz7, .stVerticalBlock {{ gap: 0.5rem !important; }}
-          .st-emotion-cache-13ln4jf {{ padding: 0 !important; }}
-
-          /* Hide Streamlit “Made with/Deploy” badges on tiny screens */
-          .viewerBadge_container__1QSob, .stAppDeployButton {{ display: none !important; }}
-
-          /* Optionally hide the sidebar entirely in Mobile Layout */
-          {"[data-testid='stSidebar'] { display: none !important; }" if hide_sidebar else ""}
-          {"[data-testid='stAppViewContainer'] > .main { margin-left: 0 !important; }" if hide_sidebar else ""}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 def inject_soft_bg():
     """Single source of truth for the soft purple-white background used across pages."""
     st.markdown(
@@ -737,13 +697,6 @@ def main() -> None:
     # Keep session flags as before
     st.session_state["layout_index"] = 1 if layout_choice == "Mobile Layout" else 0
     st.session_state["layout_mode"] = "mobile" if layout_choice == "Mobile Layout" else "desktop"
-
-    # Hide sidebar and make content full-width when "Mobile Layout" is selected
-    if layout_choice == "Mobile Layout":
-        _inject_mobile_css(hide_sidebar=True)
-    else:
-        # ensure any mobile overrides are not affecting desktop
-        _inject_mobile_css(hide_sidebar=False)
 
     if page == "Connect Notion":
         render_connect_page()
