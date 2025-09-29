@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__ import annotations  
 import os
 import sys
 import base64
@@ -6,14 +6,16 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-# --- make "src/edge_analysis" importable on Streamlit Cloud ---
+# ---------------------------- import path for src/ ----------------------------
 _ROOT = Path(__file__).resolve().parent
 _SRC = _ROOT / "src"
 if _SRC.exists():
     sys.path.insert(0, str(_SRC))
-# --------------------------------------------------------------
 
-# ───────────────────────────── Page config / assets ───────────────────────────
+# ------------------------------- brand colors --------------------------------
+BRAND_PURPLE = "#4800ff"
+
+# --------------------------- Page config / assets -----------------------------
 def _find_assets_dir() -> Path:
     candidates = [
         _ROOT / "assets",
@@ -39,7 +41,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Force custom favicon (works around Streamlit tab icon)
+# Tab favicon (extra nudge)
 if FAVICON.exists():
     try:
         favicon_b64 = base64.b64encode(FAVICON.read_bytes()).decode()
@@ -50,15 +52,14 @@ if FAVICON.exists():
     except Exception:
         pass
 
-# ───────────────────────────── Secrets / runtime config ───────────────────────
+# ------------------------ Secrets / runtime helpers ---------------------------
 def _get_query_param(name: str) -> str | None:
     try:
         val = st.query_params.get(name)
-        if isinstance(val, list):  # older Streamlit used lists
+        if isinstance(val, list):
             return val[0] if val else None
         return val
     except Exception:
-        # Fallback for very old Streamlit versions
         try:
             qp = st.experimental_get_query_params()
             if name in qp and qp[name]:
@@ -68,19 +69,12 @@ def _get_query_param(name: str) -> str | None:
     return None
 
 def _runtime_secret(key: str, default=None):
-    """
-    Priority:
-      1) Per-session overrides set on the Settings page (st.session_state)
-      2) URL query params (?notion_token=...&database_id=...)
-      3) st.secrets / environment (original 'live notion connected')
-    """
-    # 1) Session override
+    """Priority: session override -> URL query param -> secrets/env."""
     override_key = f"override_{key}"
     val = st.session_state.get(override_key)
     if val:
         return val
 
-    # 2) Query params
     if key == "NOTION_TOKEN":
         qp = _get_query_param("notion_token")
         if qp:
@@ -90,13 +84,12 @@ def _runtime_secret(key: str, default=None):
         if qp:
             return qp
 
-    # 3) Secrets / env
     try:
         return st.secrets[key]
     except Exception:
         return os.environ.get(key, default)
 
-# --- package helpers ---
+# ------------------------------- package imports ------------------------------
 from edge_analysis.data.notion_adapter import load_trades_from_notion
 from edge_analysis.core.constants import MODEL_SET, INSTRUMENT_CANONICAL, SESSION_CANONICAL
 from edge_analysis.core.parsing import (
@@ -107,7 +100,68 @@ from edge_analysis.ui.theme import apply_theme, inject_global_css, inject_header
 from edge_analysis.ui.components import show_light_table
 from edge_analysis.ui.tabs import render_all_tabs, generate_overall_stats
 
-# ───────────────────────────── Data loading / cleaning ────────────────────────
+# --------------------------- UI helpers (NEW) ---------------------------------
+def _inject_dropdown_css():
+    """
+    Global: make all Streamlit selectboxes look like non-editable button dropdowns,
+    hide the text caret, and use a bold chevron icon (not a triangle).
+    """
+    # Inline SVG chevron (dark ink). NOTE: # must be %23 inside data-URL.
+    chevron_svg = (
+        "data:image/svg+xml;utf8,"
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>"
+        "<path d='M6 9l6 6 6-6' fill='none' stroke='%230f172a' stroke-width='2' "
+        "stroke-linecap='round' stroke-linejoin='round'/>"
+        "</svg>"
+    )
+
+    st.markdown(
+        f"""
+        <style>
+        :root {{
+            --ea-brand: {BRAND_PURPLE};
+        }}
+        /* Unify ALL selectboxes across app (sidebar + main) */
+        [data-baseweb="select"] input {{
+            caret-color: transparent !important;   /* no flashing text caret */
+            pointer-events: none !important;       /* not editable */
+            user-select: none !important;
+            opacity: 0 !important;
+            width: 0 !important;
+            min-width: 0 !important;
+        }}
+        [data-baseweb="select"] [role="combobox"],
+        [data-baseweb="select"] > div {{
+            cursor: pointer !important;
+        }}
+        /* Hide Streamlit/BaseWeb built-in dropdown icon to avoid double-arrows */
+        [data-baseweb="select"] svg {{
+            display: none !important;
+        }}
+        /* Add our own bold chevron */
+        [data-baseweb="select"] > div {{
+            position: relative !important;
+        }}
+        [data-baseweb="select"] > div::after {{
+            content: "";
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 16px;
+            height: 16px;
+            background-image: url("{chevron_svg}");
+            background-repeat: no-repeat;
+            background-size: 16px 16px;
+            opacity: 0.9;
+            pointer-events: none;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ---------------------------- data loading/cleaning ---------------------------
 @st.cache_data(show_spinner=True)
 def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
     if not (token and dbid):
@@ -176,62 +230,293 @@ def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
 
     return df[has_date & has_signal].copy()
 
-# ───────────────────────────── Settings page ────────────────────────────────
-def render_settings_page():
-    st.title("🔧 Settings")
-    st.write("Use your **own Notion credentials** for this session only. These are not saved to the server.")
-
-    current_token = _runtime_secret("NOTION_TOKEN")
-    current_dbid = _runtime_secret("DATABASE_ID")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        notion_token = st.text_input("Notion Token", value="" if not current_token else current_token, type="password")
-    with c2:
-        database_id = st.text_input("Database ID", value="" if not current_dbid else current_dbid)
-
-    a, b, c = st.columns([1,1,2])
-    with a:
-        if st.button("Use for this session"):
-            if notion_token and database_id:
-                st.session_state["override_NOTION_TOKEN"] = notion_token.strip()
-                st.session_state["override_DATABASE_ID"] = database_id.strip()
-                st.success("Session credentials set. Go back to Dashboard.")
-            else:
-                st.error("Please provide both Notion Token and Database ID.")
-    with b:
-        if st.button("Clear session credentials"):
-            st.session_state.pop("override_NOTION_TOKEN", None)
-            st.session_state.pop("override_DATABASE_ID", None)
-            st.info("Session overrides cleared.")
-
-    st.markdown("---")
-    st.caption("Tip: you can also prefill via URL query params: `?notion_token=...&database_id=...`")
-
-# ───────────────────────────── Dashboard ────────────────────────────────
-def render_dashboard():
-    theme_choice = st.sidebar.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state.get("ui_theme", "light") == "light" else 1)
-    from edge_analysis.ui.theme import apply_theme, inject_global_css, inject_header
-    styler = apply_theme(theme_choice.lower())
-    st.session_state["ui_theme"] = theme_choice.lower()
-    inject_global_css()
-    inject_header(theme_choice.lower())
-
-    # Sidebar fixes (black text for Navigation always)  ⟵ PATCH #1
-    sidebar_fix_css = """
-        <style>
-        [data-testid="stSidebarNav"] {display: none;}
-        [data-testid="stSidebarCloseButton"] {display: none;}
-        [data-testid="stSidebarCollapseButton"] {display: none;}
-        [data-testid="stSidebar"] {transform: none !important; visibility: visible !important;}
-        /* Force black writing for navigation labels */
-        [data-testid="stSidebar"] h2, 
-        [data-testid="stSidebar"] label, 
-        [data-testid="stSidebar"] div, 
-        [data-testid="stSidebar"] span { color: #000 !important; }
-        </style>
+# ------------------------------- Connect page --------------------------------
+def render_connect_page():
     """
-    st.markdown(sidebar_fix_css, unsafe_allow_html=True)
+    Light settings page (same look as Dashboard).
+    """
+    # Ensure same theme shell and header as dashboard
+    styler = apply_theme()   # locked to light
+    inject_global_css()
+    inject_header("light")
+
+    # Scoped light overrides for this page
+    st.markdown(
+        f"""
+        <style>
+        :root {{ --brand: {BRAND_PURPLE}; }}
+
+        /* Keep the whole app light on this page as well */
+        [data-testid="stAppViewContainer"],
+        header[data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stSidebar"] {{
+            background: #ffffff !important;
+        }}
+
+        /* Sidebar text and content readable on light */
+        [data-testid="stSidebar"] * {{
+            color: #0f172a !important;
+        }}
+
+        /* Settings wrapper scope */
+        .connect-scope, .connect-scope * {{
+            color: #0f172a !important;
+        }}
+
+        /* Inputs (force light text and border even on focus/hover) */
+        .connect-scope [data-testid="stTextInput"] input,
+        .connect-scope [data-testid="stPassword"] input,
+        .connect-scope [data-testid="stTextArea"] textarea {{
+            background: #ffffff !important;
+            color: #0f172a !important;
+            border: 1px solid #e5e7eb !important;
+            border-radius: 10px !important;
+            box-shadow: none !important;
+        }}
+        .connect-scope [data-testid="stTextInput"] input:focus,
+        .connect-scope [data-testid="stPassword"] input:focus,
+        .connect-scope [data-testid="stTextArea"] textarea:focus {{
+            border: 1px solid var(--brand) !important;
+            box-shadow: 0 0 0 2px rgba(72,0,255,0.12) !important;
+            outline: none !important;
+        }}
+        .connect-scope ::placeholder {{
+            color: #64748b !important;
+            opacity: 1 !important;
+        }}
+        /* Eye icon area */
+        .connect-scope [data-testid="stTextInput"] button {{
+            background: #ffffff !important;
+            border-left: 1px solid #e5e7eb !important;
+        }}
+        .connect-scope [data-testid="stTextInput"] button svg {{ color:#0f172a !important; }}
+
+        /* Buttons */
+        .connect-scope .stButton > button {{
+            background: #ffffff !important;
+            color: #0f172a !important;
+            border: 1px solid #e5e7eb !important;
+            border-radius: 12px !important;
+            padding: 0.5rem 1rem !important;
+            box-shadow: none !important;
+            cursor: pointer !important;
+        }}
+        .connect-scope .stButton > button:hover,
+        .connect-scope .stButton > button:focus {{
+            background: #f9fafb !important;
+            color: #0f172a !important;
+            border-color: #e5e7eb !important;
+        }}
+
+        /* Expander headers - light; open area stays white */
+        .connect-scope [data-testid="stExpander"] > details {{
+            background: #ffffff !important;
+            border: 1px solid #e5e7eb !important;
+            border-radius: 12px !important;
+            overflow: hidden !important;
+        }}
+        .connect-scope [data-testid="stExpander"] summary,
+        .connect-scope [data-testid="stExpander"] div[role="button"] {{
+            background: #f3f4f6 !important;
+            color: #0f172a !important;
+            border-bottom: 1px solid #e5e7eb !important;
+            padding: .65rem .9rem !important;
+        }}
+        .connect-scope [data-testid="stExpander"] > details[open] > div {{
+            background: #ffffff !important;
+            padding: .75rem .9rem !important;
+        }}
+
+        /* Inline code pills in guide - light */
+        .connect-scope code {{
+            background: #eef2ff !important;
+            color: #0f172a !important;
+            padding: 2px 6px;
+            border-radius: 6px;
+        }}
+
+        /* Success/info alerts readable */
+        .connect-scope .stAlert {{
+            background: #ecfdf5 !important;
+            border: 1px solid #bbf7d0 !important;
+            color: #064e3b !important;
+            border-radius: 12px !important;
+        }}
+        .connect-scope .stAlert * {{ color: #064e3b !important; }}
+
+        /* Smaller logo so content sits higher */
+        .header-logo-img {{
+            transform: scale(0.7);
+            transform-origin: center;
+            margin-bottom: 0.25rem !important;
+        }}
+
+        /* Kill stray legacy dark boxes */
+        .css-1d391kg, .css-1kyxreq, .css-1avcm0n {{
+            background: transparent !important;
+        }}
+
+        /***** Visual walkthrough styles *****/
+        .ea-walk {{ font-size: 15.5px; line-height: 1.55; }}
+        .ea-walk h4 {{
+          margin: 0.75rem 0 0.5rem 0; 
+          font-size: 16px; 
+          font-weight: 800; 
+          color: #0f172a;
+        }}
+        .ea-quicklinks {{
+          display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 10px 0;
+        }}
+        .ea-link {{
+          display: inline-flex; align-items: center; gap: 6px;
+          padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 10px;
+          background: #ffffff; color: #0f172a; text-decoration: none; font-weight: 600;
+        }}
+        .ea-link:hover {{ background: #f9fafb; }}
+        .ea-steps {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 10px; }}
+        .ea-step {{
+          background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px;
+          padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start;
+        }}
+        .ea-num {{
+          width: 26px; height: 26px; flex: 0 0 26px; border-radius: 8px;
+          display: inline-flex; align-items: center; justify-content: center;
+          font-weight: 800; background: #eef2ff; color: var(--brand);
+        }}
+        .ea-mono {{ background: #eef2ff; padding: 2px 6px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }}
+        .ea-check, .ea-troubleshoot {{
+          margin-top: 8px; padding: 10px 12px; border-radius: 12px; 
+          border: 1px solid #e5e7eb; background: #ffffff;
+        }}
+        .ea-list {{ margin: 6px 0 0 0; padding-left: 18px; }}
+        .ea-kbd {{ padding: 1px 6px; border: 1px solid #e5e7eb; border-bottom-width: 2px; border-radius: 6px; background: #fff; font-weight: 700; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container():
+        st.markdown('<div class="connect-scope">', unsafe_allow_html=True)
+
+        st.title("Connect Notion")
+        st.write(
+            "Use your **own Notion credentials** for this session only. "
+            "These are **not** saved on any server."
+        )
+
+        # --- NEW: Visual walkthrough (replaces old quick guide) ---
+        with st.expander("Visual walkthrough", expanded=True):
+            st.markdown(
+                """
+                <div class="ea-walk">
+                  <div class="ea-quicklinks">
+                    <a class="ea-link" href="https://www.notion.so/my-integrations" target="_blank">🔗 Open Notion Integrations</a>
+                    <a class="ea-link" href="https://www.notion.so" target="_blank">🏠 Open Notion</a>
+                  </div>
+
+                  <h4>🔑 Create your Notion token</h4>
+                  <div class="ea-steps">
+                    <div class="ea-step"><span class="ea-num">1</span><div><strong>Go to</strong> <span class="ea-mono">notion.com/my-integrations</span> → click <strong>+ New integration</strong>.</div></div>
+                    <div class="ea-step"><span class="ea-num">2</span><div><strong>Name it</strong> (e.g., <strong>Edge Analysis</strong>) and pick your workspace.</div></div>
+                    <div class="ea-step"><span class="ea-num">3</span><div>Under <strong>Capabilities</strong>, enable <strong>Read content</strong> → <strong>Submit</strong>.</div></div>
+                    <div class="ea-step"><span class="ea-num">4</span><div><strong>Copy</strong> the <em>Internal Integration Token</em> (starts with <span class="ea-mono">secret_</span>). That’s your <strong>Notion Token</strong>.</div></div>
+                  </div>
+
+                  <h4>🗂️ Get your Database ID</h4>
+                  <div class="ea-steps">
+                    <div class="ea-step"><span class="ea-num">1</span><div>Open your database. If it’s inline, choose <strong>Open as page</strong>.</div></div>
+                    <div class="ea-step"><span class="ea-num">2</span><div>Click <strong>Share</strong> → <strong>Connect to / Add connections</strong> → choose your integration (e.g., <em>Edge Analysis</em>).</div></div>
+                    <div class="ea-step"><span class="ea-num">3</span><div>Click the <strong>⋯</strong> (top-right) → <strong>Copy link</strong>. The URL looks like:<br><span class="ea-mono">https://www.notion.so/My-DB-Name-12345678abcd1234ef567890abcd1234?v=...</span><br>The 32-character part before <span class="ea-mono">?v=</span> is your <strong>Database ID</strong> (dashes are fine).</div></div>
+                  </div>
+
+                  <div class="ea-check">
+                    <strong>✅ Quick checklist</strong>
+                    <ul class="ea-list">
+                      <li>Token starts with <span class="ea-mono">secret_</span></li>
+                      <li>Database is <strong>Connected</strong> to your integration via <strong>Share → Connect</strong></li>
+                      <li>Have a 32-character <strong>Database ID</strong></li>
+                    </ul>
+                  </div>
+
+                  <div class="ea-troubleshoot">
+                    <strong>🛠️ Troubleshooting</strong>
+                    <ul class="ea-list">
+                      <li>Don’t see <span class="ea-kbd">Connect to</span>? Duplicate the DB to a workspace you own.</li>
+                      <li>No ID in the link? Make sure it’s a <strong>full page</strong> database, then copy link again.</li>
+                    </ul>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        current_token = _runtime_secret("NOTION_TOKEN")
+        current_dbid = _runtime_secret("DATABASE_ID")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            notion_token = st.text_input(
+                "Notion Token",
+                value="" if not current_token else current_token,
+                type="password",
+                key="settings_notion_token",
+            )
+        with c2:
+            database_id = st.text_input(
+                "Database ID",
+                value="" if not current_dbid else current_dbid,
+                key="settings_database_id",
+            )
+
+        a, b, _ = st.columns([1, 1, 2])
+        with a:
+            if st.button("Use for this session", key="btn_use_session"):
+                if notion_token and database_id:
+                    st.session_state["override_NOTION_TOKEN"] = notion_token.strip()
+                    st.session_state["override_DATABASE_ID"] = database_id.strip()
+                    st.success("All set! Switch to the Dashboard.")
+                else:
+                    st.error("Please provide both Notion Token and Database ID.")
+        with b:
+            if st.button("Clear session credentials", key="btn_clear_session"):
+                st.session_state.pop("override_NOTION_TOKEN", None)
+                st.session_state.pop("override_DATABASE_ID", None)
+                st.info("Session overrides cleared.")
+
+        st.caption("Tip: you can also prefill via URL query params: `?notion_token=...&database_id=...`")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# -------------------------------- Dashboard -----------------------------------
+def render_dashboard():
+    # Purple accent banner text
+    st.markdown(
+        f"""
+        <style>
+        :root {{ --brand: {BRAND_PURPLE}; }}
+        .live-banner {{
+            text-align: center;
+            margin: -8px 0 16px 0;
+            font-weight: 800;
+            font-size: 22px;
+            color: var(--brand);
+        }}
+
+        /* Ensure sidebar is light and text is black on Dashboard */
+        [data-testid="stSidebar"] {{
+            background: #ffffff !important;
+        }}
+        [data-testid="stSidebar"] * {{
+            color: #0f172a !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    styler = apply_theme()   # locked to light
+    inject_global_css()
+    inject_header("light")
 
     token = _runtime_secret("NOTION_TOKEN")
     dbid = _runtime_secret("DATABASE_ID")
@@ -239,40 +524,53 @@ def render_dashboard():
     with st.spinner("Fetching trades from Notion…"):
         df = load_live_df(token, dbid)
 
-    # Move Live Notion Connected right under header logo  ⟵ PATCH #2
-    if token and dbid:
-        st.markdown(
-            """
-            <div style="text-align:center; margin-top:-14px; margin-bottom:20px;">
-              <span style="color:#4800ff; font-weight:800; font-size:22px;">
-                Live Notion Connected
-              </span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    st.markdown("<div class='live-banner'>Live Notion Connected</div>", unsafe_allow_html=True)
 
     if not (token and dbid):
-        st.warning("Add Notion credentials in **Settings** to load your data.")
+        st.warning("Add Notion credentials in **Settings → Connect Notion** to load your data.")
         return
     if df.empty:
         st.info("No data yet. Add trades, adjust filters, or check credentials.")
         return
 
-    header_color = "#000" if theme_choice == "Light" else "#fff"
-    st.sidebar.markdown(f"<h3 style='color:{header_color}'>Filters</h3>", unsafe_allow_html=True)
+    # ---------------- Sidebar Filters (button-style dropdowns) -----------------
+    st.sidebar.markdown("### Filters")
 
     instruments = sorted(df["Instrument"].dropna().unique().tolist())
     instruments = [i for i in instruments if i != "DUMMY ROW"]
+
+    # Display label mapping: Gold -> GOLD (value still 'Gold')
+    def _inst_label(v: str) -> str:
+        return "GOLD" if v == "Gold" else v
+
     inst_opts = ["All"] + instruments
-    sel_inst = st.sidebar.selectbox("Instrument", inst_opts, 0)
+    sel_inst = st.sidebar.selectbox(
+        "Instrument",
+        inst_opts,
+        index=0,
+        format_func=_inst_label,
+        key="filters_inst_select",
+    )
 
     em_opts = ["All"] + MODEL_SET
-    sel_em = st.sidebar.selectbox("Entry Model", em_opts, 0)
+    sel_em = st.sidebar.selectbox(
+        "Entry Model",
+        em_opts,
+        index=0,
+        format_func=lambda x: x,
+        key="filters_em_select",
+    )
 
     sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
-    sel_sess = st.sidebar.selectbox("Session", sess_opts, 0)
+    sel_sess = st.sidebar.selectbox(
+        "Session",
+        sess_opts,
+        index=0,
+        format_func=lambda x: x,
+        key="filters_sess_select",
+    )
 
+    # ---------------- Apply Filters -------------------------------------------
     mask = pd.Series(True, index=df.index)
     if sel_inst != "All":
         mask &= (df["Instrument"] == sel_inst)
@@ -286,6 +584,7 @@ def render_dashboard():
 
     stats = generate_overall_stats(f)
 
+    # ---------------- KPIs / cards -------------------------------------------
     if "Closed RR" in f.columns:
         wins_only = f[f["Outcome"] == "Win"]
         avg_rr_wins = float(wins_only["Closed RR"].mean()) if not wins_only.empty else 0.0
@@ -295,29 +594,61 @@ def render_dashboard():
 
     st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
     for label, value in [
-        ("Total Trades", stats["total"]),
-        ("Win %", f"{stats['win_rate']:.2f}%"),
+        ("TOTAL TRADES", stats["total"]),
+        ("WIN %", f"{stats['win_rate']:.2f}%"),
         ("BE %", f"{stats['be_rate']:.2f}%"),
-        ("Loss %", f"{stats['loss_rate']:.2f}%"),
-        ("Avg Closed RR (Wins Only)", f"{avg_rr_wins:.2f}"),
-        ("Total PnL (from RR)", f"{total_pnl_rr:,.2f}"),
+        ("LOSS %", f"{stats['loss_rate']:.2f}%"),
+        ("AVG CLOSED RR (WINS ONLY)", f"{avg_rr_wins:.2f}"),
+        ("TOTAL PNL (FROM RR)", f"{total_pnl_rr:,.2f}"),
     ]:
+        value_html = (
+            f"<div class='value' style='color: var(--brand);'>{value}</div>"
+            if label == "TOTAL PNL (FROM RR)"
+            else f"<div class='value'>{value}</div>"
+        )
         st.markdown(
-            f"<div class='kpi'><div class='label'>{label}</div><div class='value'>{value}</div></div>",
+            f"<div class='kpi'><div class='label'>{label}</div>{value_html}</div>",
             unsafe_allow_html=True,
         )
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div class='spacer-12'></div>", unsafe_allow_html=True)
 
+    # Tabs (charts/tables). Any selectboxes inside will also pick up the global
+    # CSS so they render like button dropdowns without a text caret.
     render_all_tabs(f, df, styler, show_light_table)
 
-# ───────────────────────────── Router ────────────────────────────────
-def main() -> None:
-    st.sidebar.markdown("## Navigation")
-    page = st.sidebar.radio("Go to", ["Dashboard", "Settings"], index=0)
+# --------------------------------- Router -------------------------------------
+def _detect_default_layout_index() -> int:
+    layout_qp = (_get_query_param("layout") or "").lower()
+    if layout_qp in {"m", "mobile", "phone"}:
+        return 1
+    return 0
 
-    if page == "Settings":
-        render_settings_page()
+def main() -> None:
+    # (NEW) Global dropdown styling injected BEFORE any selectboxes are drawn.
+    _inject_dropdown_css()
+
+    st.sidebar.markdown("## Settings")
+    # radios -> selectboxes (already in your version) so they look like dropdowns with our chevron
+    page = st.sidebar.selectbox(
+        "Page",
+        ["Dashboard", "Connect Notion"],
+        index=0,
+        key="nav_page",
+    )
+
+    layout_choice = st.sidebar.selectbox(
+        "Layout",
+        ["Desktop Layout", "Mobile Layout"],
+        index=_detect_default_layout_index(),
+        key="layout_choice",
+    )
+    # Keep session flags as before
+    st.session_state["layout_index"] = 1 if layout_choice == "Mobile Layout" else 0
+    st.session_state["layout_mode"] = "mobile" if layout_choice == "Mobile Layout" else "desktop"
+
+    if page == "Connect Notion":
+        render_connect_page()
     else:
         render_dashboard()
 
