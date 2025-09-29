@@ -658,34 +658,17 @@ def render_dashboard():
     render_all_tabs(f, df, styler, show_light_table)
 
 # --------------------------------- Router -------------------------------------
-def _detect_default_layout_index() -> int:
-    layout_qp = (_get_query_param("layout") or "").lower()
-    if layout_qp in {"m", "mobile", "phone"}:
-        return 1
-    return 0
-
 def main() -> None:
     # (NEW) Global dropdown styling injected BEFORE any selectboxes are drawn.
     _inject_dropdown_css()
 
     st.sidebar.markdown("## Settings")
-    # radios -> selectboxes (already in your version) so they look like dropdowns with our chevron
     page = st.sidebar.selectbox(
         "Page",
         ["Dashboard", "Connect Notion"],
         index=0,
         key="nav_page",
     )
-
-    layout_choice = st.sidebar.selectbox(
-        "Layout",
-        ["Desktop Layout", "Mobile Layout"],
-        index=_detect_default_layout_index(),
-        key="layout_choice",
-    )
-    # Keep session flags as before
-    st.session_state["layout_index"] = 1 if layout_choice == "Mobile Layout" else 0
-    st.session_state["layout_mode"] = "mobile" if layout_choice == "Mobile Layout" else "desktop"
 
     if page == "Connect Notion":
         render_connect_page()
