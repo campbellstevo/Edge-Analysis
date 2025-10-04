@@ -1,0 +1,22 @@
+﻿{
+  "columns": {
+    "Trade Date": "Date",
+    "Instrument": "Pair",
+    "Sess": "Session",
+    "Entry": "Entry Model",
+    "Conf": "Confluence",
+    "Outcome": "Outcome",
+    "RR": "Closed RR",
+    "Profit": "PnL",
+    "Completed?": "Is Complete",
+    "Stars": "Star Rating",
+    "Comment": "Notes"
+  },
+  "coercions": {
+    "Date": "date",
+    "Closed RR": "float",
+    "PnL": "float",
+    "Is Complete": "bool",
+    "Star Rating": "int"
+  }
+}

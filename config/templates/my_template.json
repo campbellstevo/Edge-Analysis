@@ -1,0 +1,34 @@
+﻿{
+  "columns": {
+    "date": "Date",
+    "pair": "Pair",
+    "session": "Session",
+    "entry_model": "Entry Model",
+    "confluence": "Confluence",
+    "result": "Outcome",
+    "closed_rr": "Closed RR",
+    "pnl": "PnL",
+    "is_complete": "Is Complete",
+    "stars": "Star Rating",
+    "notes": "Notes"
+  },
+  "coercions": {
+    "Date": "date",
+    "Closed RR": "float",
+    "PnL": "float",
+    "Is Complete": "bool",
+    "Star Rating": "int"
+  },
+  "normalizers": {
+    "Outcome": {
+      "Win": ["win","w","profit","✅"],
+      "BE": ["be","break even","0","⚪"],
+      "Loss": ["loss","l","lose","❌"]
+    },
+    "Confluence": {
+      "DIV": ["div","divergence"],
+      "Sweep": ["sweep","liquidity sweep","liq sweep"],
+      "DIV & Sweep": ["div+sweep","div and sweep","div & sweep"]
+    }
+  }
+}
