@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import altair as alt
 import streamlit as st
+from pathlib import Path  # PATCH: for template download paths
 
 # NEW: import the three clean renderers from components
 from edge_analysis.ui.components import (
@@ -10,6 +11,9 @@ from edge_analysis.ui.components import (
     render_session_performance_table,
     render_day_performance_table,
 )
+
+# PATCH: auto-detect adapter for multiple templates
+from edge_analysis.data.template_adapter import adapt_auto
 
 CONFLUENCE_OPTIONS = ["DIV", "Sweep", "DIV & Sweep"]
 
@@ -381,15 +385,87 @@ def _data_tab(f_all: pd.DataFrame, show_table):
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+# ----------------------- PATCH: Connect Notion templates UI -------------------
+def render_connect_notion_templates_ui():
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+    st.markdown("## Connect Notion / Templates")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### My Template")
+        p1 = Path("assets/templates/my_template.csv")
+        if p1.exists():
+            st.download_button(
+                "⬇️ Download My Template (CSV)",
+                data=p1.read_bytes(),
+                file_name="my_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.warning("Missing: assets/templates/my_template.csv")
+
+    with c2:
+        st.markdown("### TradingPools Template")
+        p2 = Path("assets/templates/tradingpools_template.csv")
+        if p2.exists():
+            st.download_button(
+                "⬇️ Download TradingPools Template (CSV)",
+                data=p2.read_bytes(),
+                file_name="tradingpools_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.warning("Missing: assets/templates/tradingpools_template.csv")
+
+    st.divider()
+    st.subheader("Upload your filled template")
+    up = st.file_uploader(
+        "CSV/TSV/XLSX supported. Both templates work.",
+        type=["csv","tsv","xlsx","xls"],
+        key="upload_templates_dual"
+    )
+
+    if up:
+        uploads = Path("uploads")
+        uploads.mkdir(parents=True, exist_ok=True)
+        fpath = uploads / up.name
+        with open(fpath, "wb") as f:
+            f.write(up.getbuffer())
+
+        df, mapping_name = adapt_auto(fpath, "config/templates")
+        if mapping_name:
+            st.success(f"Detected template: **{mapping_name}**")
+        else:
+            st.warning("No mapping detected. Add a JSON mapping under config/templates/ if needed.")
+
+        # quick sanity checks
+        issues = []
+        for col in ["Date","Pair","Outcome","Closed RR","Is Complete"]:
+            if col not in df.columns:
+                issues.append(f"Missing required column: {col}")
+        if "Outcome" in df.columns:
+            bad = ~df["Outcome"].isin(["Win","BE","Loss"]) & df["Outcome"].notna()
+            if bad.any():
+                issues.append(f"Unexpected Outcome values: {list(df.loc[bad,'Outcome"].astype(str).unique()[:5])}")
+        if issues:
+            st.info("Checks:\n\n- " + "\n- ".join(issues))
+
+        st.dataframe(df.head(25), use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
 def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
     # completion-aware slice
     f_perf = _prep_perf_df(f)
     df_all_safe = df_all.copy() if df_all is not None else df_all
 
-    # Removed Confluence and Coach for now
-    t1, t2, t3, t4, t5 = st.tabs(
-        ["Growth","Entry Models","Sessions","Time & Days","Data"]
+    # PATCH: Added "Connect Notion" tab first
+    t0, t1, t2, t3, t4, t5 = st.tabs(
+        ["Connect Notion","Growth","Entry Models","Sessions","Time & Days","Data"]
     )
+    with t0: render_connect_notion_templates_ui()
     with t1: _growth_tab(f_perf, df_all_safe, styler)
     with t2: _entry_models_tab(f_perf, show_table)
     with t3: _sessions_tab(f_perf, show_table)
