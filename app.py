@@ -347,6 +347,8 @@ from edge_analysis.core.parsing import (
 from edge_analysis.ui.theme import apply_theme, inject_global_css, inject_header
 from edge_analysis.ui.components import show_light_table
 from edge_analysis.ui.tabs import render_all_tabs, generate_overall_stats
+# PATCH: templates UI helper (downloads + upload auto-detect)
+from edge_analysis.ui.connect_templates import render_connect_notion_templates_ui
 
 # --------------------------- UI helpers (NEW) ---------------------------------
 def _inject_dropdown_css():
@@ -783,6 +785,11 @@ def render_connect_page(mobile: bool):
             "Use your **own Notion credentials** for this session only. "
             "These are **not** saved on any server."
         )
+
+        # --- PATCH: CSV Templates section ABOVE Visual walkthrough ---
+        st.caption("Prefer CSV? Download a template, fill a few rows, and upload to preview in-app.")
+        render_connect_notion_templates_ui()
+        st.divider()
 
         # --- Visual walkthrough ---
         with st.expander("Visual walkthrough", expanded=True):

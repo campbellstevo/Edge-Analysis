@@ -448,7 +448,8 @@ def render_connect_notion_templates_ui():
         if "Outcome" in df.columns:
             bad = ~df["Outcome"].isin(["Win","BE","Loss"]) & df["Outcome"].notna()
             if bad.any():
-                issues.append(f"Unexpected Outcome values: {list(df.loc[bad,'Outcome"].astype(str).unique()[:5])}")
+                issues.append(f"Unexpected Outcome values: {list(df.loc[bad,'Outcome'].astype(str).unique()[:5])}")
+
         if issues:
             st.info("Checks:\n\n- " + "\n- ".join(issues))
 
