@@ -519,93 +519,6 @@ def _data_tab(f_all: pd.DataFrame, show_table):
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --------------------------- Losing Streaks tab ------------------------------
-def _prob_at_least_k_losses_exact(n: int, k: int, win_p: float) -> float:
-    """
-    Exact probability of seeing >= k consecutive losses in n Bernoulli trials
-    with success prob win_p. Uses DP on the longest current losing run.
-    """
-    lose_p = 1.0 - win_p
-    dp = [[0.0] * (k) for _ in range(n + 1)]
-    dp[0][0] = 1.0
-    for i in range(n):
-        for j in range(k):
-            p = dp[i][j]
-            if p == 0.0:
-                continue
-            # Win -> reset losing run to 0
-            dp[i + 1][0] += p * win_p
-            # Loss -> increase losing run by 1 (if reaching k, that path exits to 'at least k')
-            if j + 1 < k:
-                dp[i + 1][j + 1] += p * lose_p
-    prob_no_run = sum(dp[n])
-    return 1.0 - prob_no_run
-
-def _losing_streaks_tab(f: pd.DataFrame, styler):
-    st.markdown('<div class="section">', unsafe_allow_html=True)
-    st.markdown("### 🔥 Losing Streak Probability Matrix")
-    st.caption("Probability of seeing **at least** X consecutive losses within N trades")
-
-    # Controls
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c1:
-        n_trades = st.slider("Number of trades (N)", 20, 200, 50, 5, key="ls_n")
-    with c2:
-        max_streak = st.slider("Max streak shown (X)", 2, 15, 10, 1, key="ls_kmax")
-    with c3:
-        step_pct = st.selectbox("Win rate step", ["1%", "5%"], index=1, key="ls_step")
-        step = 0.01 if step_pct == "1%" else 0.05
-
-    wr_info = outcome_rates_from(_prep_perf_df(f) if f is not None else pd.DataFrame())
-    current_wr = wr_info.get("win_rate", 0.0)
-
-    win_rates = np.round(np.arange(step, 1.0, step), 4)
-    streaks = list(range(2, max_streak + 1))
-
-    rows = []
-    for p in win_rates:
-        for s in streaks:
-            prob = _prob_at_least_k_losses_exact(n_trades, s, p)
-            rows.append({"Win %": int(round(p * 100)), "Streak": s, "Probability": prob})
-
-    df = pd.DataFrame(rows)
-
-    chart = (
-        alt.Chart(df)
-        .mark_rect()
-        .encode(
-            x=alt.X("Streak:O", title="Consecutive losing trades (X)"),
-            y=alt.Y("Win %:O", title="Win rate"),
-            color=alt.Color(
-                "Probability:Q",
-                scale=alt.Scale(domain=[0, 1], range=["#1f1b2e", "#4800ff", "#ea3943"]),
-                legend=None,
-            ),
-            tooltip=[
-                alt.Tooltip("Win %:O", title="Win rate"),
-                alt.Tooltip("Streak:O", title="Losing streak"),
-                alt.Tooltip("Probability:Q", title="Probability", format=".1%"),
-            ],
-        )
-        .properties(height=420)
-    )
-    st.altair_chart(styler(chart), use_container_width=True)
-
-    pivot = (df.pivot(index="Win %", columns="Streak", values="Probability") * 100).round(1)
-    st.markdown("#### 📊 Table")
-    st.dataframe(
-        pivot.astype(str) + "%",
-        use_container_width=True,
-        height=min(420, 56 + 28 * len(win_rates)),
-    )
-
-    st.markdown(
-        f"<div class='muted'>N = <b>{n_trades}</b> trades • Your current WR (from filtered data): "
-        f"<b>{current_wr:.2f}%</b></div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
 # ----------------------- PATCH: Connect Notion templates UI -------------------
 def render_connect_notion_templates_ui():
     st.markdown('<div class="section">', unsafe_allow_html=True)
@@ -678,15 +591,15 @@ def render_connect_notion_templates_ui():
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ----------------------- UPDATED render_all_tabs (patch applied) --------------
+# ----------------------- UPDATED render_all_tabs (Losing Streaks removed) ----
 def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
     # completion-aware slice
     f_perf = _prep_perf_df(f)
     df_all_safe = df_all.copy() if df_all is not None else df_all
 
-    # 🔥 Dashboard tabs WITHOUT “Connect Notion” + Losing Streaks
-    t1, t2, t3, t4, t5, t6 = st.tabs(
-        ["Growth", "Entry Models", "Sessions", "Time & Days", "Data", "Losing Streaks"]
+    # 🔥 Dashboard tabs WITHOUT “Connect Notion” and WITHOUT “Losing Streaks”
+    t1, t2, t3, t4, t5 = st.tabs(
+        ["Growth", "Entry Models", "Sessions", "Time & Days", "Data"]
     )
 
     with t1:
@@ -703,6 +616,3 @@ def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
 
     with t5:
         _data_tab(df_all_safe, show_table)      # filtered-all completeness
-
-    with t6:
-        _losing_streaks_tab(f_perf, styler)
