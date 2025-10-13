@@ -1,11 +1,16 @@
-from __future__ import annotations
+from __future__ import annotations 
 import os
 import sys
 import base64
+import secrets               # for OAuth state
+import requests              # for token exchange
+import hashlib               # PATCH: PKCE S256
+import time                  # PATCH: cache timestamps
+import re                    # PATCH: DB link parsing
+from urllib.parse import urlencode, urlparse  # PATCH: urlparse for DB link
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-from urllib.parse import urlencode  # NEW
 
 # ---------------------------- import path for src/ ----------------------------
 _ROOT = Path(__file__).resolve().parent
@@ -42,65 +47,36 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- PATCH: rerun shim (works across Streamlit versions) ---------------------
+def _st_rerun():
+    try:
+        st.rerun()
+    except Exception:
+        try:
+            st.experimental_rerun()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
 # --- PATCH (Mobile-fit): compact typography & spacing on small screens ---
 st.markdown("""
 <style>
 @media (max-width: 480px) {
-  /* tighter page padding */
-  .block-container {
-    padding-left: 0.6rem !important;
-    padding-right: 0.6rem !important;
-    padding-top: 0.5rem !important;
-  }
-
-  /* general type scale */
-  html { font-size: 14px; } /* down from ~16px */
-  body, p, span, div { line-height: 1.15; }
-
-  /* cards */
+  .block-container { padding-left: .6rem !important; padding-right: .6rem !important; padding-top: .5rem !important; }
+  html { font-size: 14px; } body, p, span, div { line-height: 1.15; }
   .entry-card { padding: 14px 14px; border-radius: 12px; }
   .entry-card h2 { font-size: 20px; margin: 0 0 6px 0; }
-
-  /* tables */
-  table.entry-model-table,
-  table.session-perf-table,
-  table.day-perf-table {
-    font-size: 12px;                /* smaller text in tables */
-    table-layout: fixed;            /* prevents overflow */
-    width: 100%;
+  table.entry-model-table, table.session-perf-table, table.day-perf-table { font-size: 12px; table-layout: fixed; width: 100%; }
+  .entry-model-table thead th, .entry-model-table tbody td, .session-perf-table thead th, .session-perf-table tbody td, .day-perf-table thead th, .day-perf-table tbody td {
+    padding: 8px 6px; line-height: 1.15; word-break: break-word; hyphens: auto;
   }
-  .entry-model-table thead th,
-  .entry-model-table tbody td,
-  .session-perf-table thead th,
-  .session-perf-table tbody td,
-  .day-perf-table thead th,
-  .day-perf-table tbody td {
-    padding: 8px 6px;               /* tighter rows */
-    line-height: 1.15;
-    word-break: break-word;
-    hyphens: auto;
-  }
-  /* optional: narrower numeric cols (2nd/3rd) */
-  .entry-model-table td:nth-child(2),
-  .session-perf-table td:nth-child(2),
-  .day-perf-table td:nth-child(2) { width: 64px; }
-  .entry-model-table td:nth-child(3),
-  .session-perf-table td:nth-child(3),
-  .day-perf-table td:nth-child(3) { width: 72px; }
-
-  /* Streamlit tabs smaller */
+  .entry-model-table td:nth-child(2), .session-perf-table td:nth-child(2), .day-perf-table td:nth-child(2) { width: 64px; }
+  .entry-model-table td:nth-child(3), .session-perf-table td:nth-child(3), .day-perf-table td:nth-child(3) { width: 72px; }
   .stTabs [data-baseweb="tab"] { padding: 6px 10px; }
   .stTabs [data-baseweb="tab"] p { font-size: 14px; margin: 0; }
-
-  /* KPI tiles */
   div[data-testid="stMetricValue"] { font-size: 24px; }
   div[data-testid="stMetricDelta"] { font-size: 12px; }
   .stMetric { padding: 6px 8px; }
-
-  /* charts spacing (Altair/Plotly/Vega) */
-  .stAltairChart, .stPlotlyChart, .stVegaLiteChart {
-    margin-top: 4px; margin-bottom: 8px;
-  }
+  .stAltairChart, .stPlotlyChart, .stVegaLiteChart { margin-top: 4px; margin-bottom: 8px; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -108,98 +84,27 @@ st.markdown("""
 # --- PATCH (1): Card + clean table CSS (added once, near top) ---
 st.markdown("""
 <style>
-/* Card container for the table */
-.entry-card {
-  background: #ffffff;
-  border-radius: 16px;
-  padding: 20px 24px;
-  box-shadow: 0 6px 22px rgba(0,0,0,0.06);
-}
-
-/* Title */
-.entry-card h2 {
-  margin: 0 0 10px 0;
-  font-size: 28px;
-  line-height: 1.2;
-  font-weight: 800;
-}
-
-/* Table basics */
-.entry-model-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 16px;
-}
-
-/* Header */
-.entry-model-table thead th {
-  text-align: left;
-  font-weight: 700;
-  background: #f6f7fb;
-  padding: 12px 10px;
-  border-bottom: 2px solid #4800ff; /* brand underline */
-}
-
-/* Body */
-.entry-model-table tbody td {
-  padding: 12px 10px;
-  border-bottom: 1px solid #eef0f5;
-}
-
-/* Subtle zebra for readability */
-.entry-model-table tbody tr:nth-child(even) td {
-  background: #fafbff;
-}
-
-/* Align numbers to the right, first column left */
-.entry-model-table td.num, .entry-model-table th.num { text-align: right; }
-.entry-model-table td.text, .entry-model-table th.text { text-align: left; }
-
-/* --- EXTRA PATCH: keep tables inside cards clean on mobile --- */
-.entry-card .table-wrap {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.entry-model-table {
-  table-layout: fixed;    /* prevent one column from stretching everything */
-  min-width: 520px;       /* keeps layout usable on scroll */
-}
-
-.entry-model-table th,
-.entry-model-table td {
-  word-wrap: break-word;
-  overflow-wrap: anywhere;
-}
+.entry-card { background:#fff; border-radius:16px; padding:20px 24px; box-shadow:0 6px 22px rgba(0,0,0,.06); }
+.entry-card h2 { margin:0 0 10px 0; font-size:28px; line-height:1.2; font-weight:800; }
+.entry-model-table { width:100%; border-collapse:separate; border-spacing:0; font-size:16px; }
+.entry-model-table thead th { text-align:left; font-weight:700; background:#f6f7fb; padding:12px 10px; border-bottom:2px solid #4800ff; }
+.entry-model-table tbody td { padding:12px 10px; border-bottom:1px solid #eef0f5; }
+.entry-model-table tbody tr:nth-child(even) td { background:#fafbff; }
+.entry-model-table td.num, .entry-model-table th.num { text-align:right; }
+.entry-model-table td.text, .entry-model-table th.text { text-align:left; }
+.entry-card .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.entry-model-table { table-layout:fixed; min-width:520px; }
+.entry-model-table th, .entry-model-table td { word-wrap:break-word; overflow-wrap:anywhere; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- Mobile-only: make tabs wrap into multiple rows ---
 st.markdown("""
 <style>
-/* Only affect small screens */
 @media (max-width: 768px) {
-
-  /* Wrap the tab list instead of horizontal scrolling */
-  div[data-baseweb="tab-list"] {
-    flex-wrap: wrap !important;
-    overflow: visible !important;   /* reveal all rows */
-    gap: 8px 12px !important;       /* row/column spacing */
-  }
-
-  /* Keep each tab as an inline pill; allow wrapping cleanly */
-  div[data-baseweb="tab"] {
-    flex: 0 1 auto !important;
-    margin: 0 !important;
-  }
-
-  /* Remove/neutralize any fade masks some themes add at edges */
-  div[data-baseweb="tab-list"]::before,
-  div[data-baseweb="tab-list"]::after {
-    content: none !important;
-    display: none !important;
-  }
+  div[data-baseweb="tab-list"] { flex-wrap: wrap !important; overflow: visible !important; gap: 8px 12px !important; }
+  div[data-baseweb="tab"] { flex: 0 1 auto !important; margin: 0 !important; }
+  div[data-baseweb="tab-list"]::before, div[data-baseweb="tab-list"]::after { content: none !important; display: none !important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -208,13 +113,8 @@ st.markdown("""
 st.markdown("""
 <style>
 @media (max-width: 768px) {
-  .stTabs [data-baseweb="tab-highlight"] { 
-    display: none !important; 
-  }
-  .stTabs [role="tab"][aria-selected="true"] {
-    border-bottom: none !important;
-    box-shadow: none !important;
-  }
+  .stTabs [data-baseweb="tab-highlight"] { display: none !important; }
+  .stTabs [role="tab"][aria-selected="true"] { border-bottom: none !important; box-shadow: none !important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -223,80 +123,34 @@ st.markdown("""
 st.markdown("""
 <style>
 @media (max-width: 480px) {
-  /* Tighter global scale & gutters */
-  html { font-size: 12.5px; }                 /* smaller base */
-  .block-container { 
-    padding-left: 0.45rem !important; 
-    padding-right: 0.45rem !important; 
-    padding-top: 0.4rem !important; 
+  html { font-size: 12.5px; }
+  .block-container { padding-left:.45rem !important; padding-right:.45rem !important; padding-top:.4rem !important; }
+  .stMetric { padding:4px 6px !important; }
+  div[data-testid="stMetricValue"] { font-size:20px !important; }
+  div[data-testid="stMetricDelta"] { font-size:11px !important; }
+  .entry-card h2 { font-size:17px !important; margin:0 0 4px 0 !important; }
+  h2, h3 { font-size:19px !important; margin:8px 0 6px 0 !important; }
+  table.entry-model-table, table.session-perf-table, table.day-perf-table {
+    width:100% !important; table-layout:fixed !important; font-size:10.5px !important; border-spacing:0 !important; min-width:0 !important;
   }
-
-  /* KPI tiles smaller */
-  .stMetric { padding: 4px 6px !important; }
-  div[data-testid="stMetricValue"] { font-size: 20px !important; }
-  div[data-testid="stMetricDelta"] { font-size: 11px !important; }
-
-  /* Card titles / section headings */
-  .entry-card h2 { font-size: 17px !important; margin: 0 0 4px 0 !important; }
-  h2, h3 { font-size: 19px !important; margin: 8px 0 6px 0 !important; }
-
-  /* Fit ALL table columns without horizontal scroll */
-  table.entry-model-table,
-  table.session-perf-table,
-  table.day-perf-table {
-    width: 100% !important;
-    table-layout: fixed !important;          /* force equal distribution */
-    font-size: 10.5px !important;            /* <-- main squeeze */
-    border-spacing: 0 !important;
-    min-width: 0 !important;                 /* allow shrinking */
+  .entry-model-table thead th, .entry-model-table tbody td, .session-perf-table thead th, .session-perf-table tbody td, .day-perf-table thead th, .day-perf-table tbody td {
+    padding:4px 4px !important; line-height:1.05 !important; word-break:break-word !important; overflow-wrap:anywhere !important; white-space:normal !important; hyphens:auto !important;
   }
-
-  /* Cells: tiny padding, wrap anywhere */
-  .entry-model-table thead th,
-  .entry-model-table tbody td,
-  .session-perf-table thead th,
-  .session-perf-table tbody td,
-  .day-perf-table thead th,
-  .day-perf-table tbody td {
-    padding: 4px 4px !important;             /* tighter rows */
-    line-height: 1.05 !important;
-    word-break: break-word !important;
-    overflow-wrap: anywhere !important;
-    white-space: normal !important;
-    hyphens: auto !important;
-  }
-
-  /* Slightly bias first column wider for long labels (Entry_Model/Session/Day) */
-  .entry-model-table colgroup col:first-child,
-  .session-perf-table colgroup col:first-child,
-  .day-perf-table colgroup col:first-child { width: 42% !important; }
-
-  /* If there is no <colgroup>, approximate via nth-child widths */
   .entry-model-table th:nth-child(1), .entry-model-table td:nth-child(1),
   .session-perf-table th:nth-child(1), .session-perf-table td:nth-child(1),
-  .day-perf-table th:nth-child(1), .day-perf-table td:nth-child(1) { width: 42% !important; }
-  .entry-model-table th:nth-child(n+2), .entry-model-table td:nth-child(n+2),
-  .session-perf-table th:nth-child(n+2), .session-perf-table td:nth-child(n+2),
-  .day-perf-table th:nth-child(n+2), .day-perf-table td:nth-child(n+2) { width: auto !important; }
-
-  /* Tabs a bit smaller */
-  .stTabs [data-baseweb="tab"] { padding: 5px 8px !important; }
-  .stTabs [data-baseweb="tab"] p { font-size: 13px !important; margin: 0 !important; }
-
-  /* Reduce vertical gaps so tables land higher */
-  .spacer-12 { height: 6px !important; }
+  .day-perf-table th:nth-child(1), .day-perf-table td:nth-child(1) { width:42% !important; }
+  .stTabs [data-baseweb="tab"] { padding:5px 8px !important; }
+  .stTabs [data-baseweb="tab"] p { font-size:13px !important; margin:0 !important; }
+  .spacer-12 { height:6px !important; }
 }
 </style>
 """, unsafe_allow_html=True)
 
-# Tab favicon (extra nudge)
+# Tab favicon
 if FAVICON.exists():
     try:
         favicon_b64 = base64.b64encode(FAVICON.read_bytes()).decode()
-        st.markdown(
-            f"""<link rel="shortcut icon" href="data:image/png;base64,{favicon_b64}">""",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"""<link rel=\"shortcut icon\" href=\"data:image/png;base64,{favicon_b64}\">""", unsafe_allow_html=True)
     except Exception:
         pass
 
@@ -316,13 +170,26 @@ def _get_query_param(name: str) -> str | None:
             pass
     return None
 
+def _get_all_query_params() -> dict:
+    try:
+        return dict(st.query_params)
+    except Exception:
+        try:
+            return st.experimental_get_query_params()
+        except Exception:
+            return {}
+
+def _clear_query_params():
+    try:
+        st.query_params.clear()
+    except Exception:
+        st.experimental_set_query_params()
+
 def _runtime_secret(key: str, default=None):
-    """Priority: session override -> URL query param -> secrets/env."""
     override_key = f"override_{key}"
     val = st.session_state.get(override_key)
     if val:
         return val
-
     if key == "NOTION_TOKEN":
         qp = _get_query_param("notion_token")
         if qp:
@@ -331,7 +198,6 @@ def _runtime_secret(key: str, default=None):
         qp = _get_query_param("database_id")
         if qp:
             return qp
-
     try:
         return st.secrets[key]
     except Exception:
@@ -350,11 +216,6 @@ from edge_analysis.ui.tabs import render_all_tabs, generate_overall_stats
 
 # --------------------------- UI helpers (NEW) ---------------------------------
 def _inject_dropdown_css():
-    """
-    Global: make all Streamlit selectboxes look like non-editable button dropdowns,
-    hide the text caret, and use a bold chevron icon (not a triangle).
-    """
-    # Inline SVG chevron (dark ink). NOTE: # must be %23 inside data-URL.
     chevron_svg = (
         "data:image/svg+xml;utf8,"
         "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>"
@@ -362,57 +223,23 @@ def _inject_dropdown_css():
         "stroke-linecap='round' stroke-linejoin='round'/>"
         "</svg>"
     )
-
     st.markdown(
         f"""
         <style>
-        :root {{
-            --ea-brand: {BRAND_PURPLE};
-        }}
-        /* Unify ALL selectboxes across app (sidebar + main) */
-        /* PATCH: restrict to the select's internal search input so normal text inputs remain editable */
+        :root {{ --ea-brand: {BRAND_PURPLE}; }}
         [data-baseweb="select"] input[aria-autocomplete="list"] {{
-            caret-color: transparent !important;   /* no flashing text caret */
-            pointer-events: none !important;       /* not editable */
-            user-select: none !important;
-            opacity: 0 !important;
-            width: 0 !important;
-            min-width: 0 !important;
+            caret-color: transparent !important; pointer-events: none !important; user-select: none !important;
+            opacity: 0 !important; width: 0 !important; min-width: 0 !important;
         }}
-        [data-baseweb="select"] [role="combobox"],
-        [data-baseweb="select"] > div {{
-            cursor: pointer !important;
-        }}
-        /* Hide Streamlit/BaseWeb built-in dropdown icon to avoid double-arrows */
-        [data-baseweb="select"] svg {{
-            display: none !important;
-        }}
-        /* Add our own bold chevron */
-        [data-baseweb="select"] > div {{
-            position: relative !important;
-        }}
+        [data-baseweb="select"] [role="combobox"], [data-baseweb="select"] > div {{ cursor: pointer !important; }}
+        [data-baseweb="select"] svg {{ display: none !important; }}
+        [data-baseweb="select"] > div {{ position: relative !important; }}
         [data-baseweb="select"] > div::after {{
-            content: "";
-            position: absolute;
-            right: 12px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 16px;
-            height: 16px;
-            background-image: url("{chevron_svg}");
-            background-repeat: no-repeat;
-            background-size: 16px 16px;
-            opacity: 0.9;
-            pointer-events: none;
+            content:""; position:absolute; right:12px; top:50%; transform:translateY(-50%); width:16px; height:16px;
+            background-image:url("{chevron_svg}"); background-repeat:no-repeat; background-size:16px 16px; opacity:.9; pointer-events:none;
         }}
-
-        /* PATCH SAFETY: ensure normal text/password/textarea inputs stay fully interactive */
-        [data-testid="stTextInput"] input,
-        [data-testid="stPassword"] input,
-        [data-testid="stTextArea"] textarea {{
-            pointer-events: auto !important;
-            opacity: 1 !important;
-            width: 100% !important;
+        [data-testid="stTextInput"] input, [data-testid="stPassword"] input, [data-testid="stTextArea"] textarea {{
+            pointer-events:auto !important; opacity:1 !important; width:100% !important;
         }}
         </style>
         """,
@@ -420,15 +247,12 @@ def _inject_dropdown_css():
     )
 
 def inject_soft_bg():
-    """Single source of truth for the soft purple-white background used across pages."""
     st.markdown(
         """
         <style>
           :root { --ea-bg-soft: #f5f6fb; }
-          /* Main content & header use the soft background */
           [data-testid="stAppViewContainer"] { background: var(--ea-bg-soft) !important; }
           header[data-testid="stHeader"], [data-testid="stToolbar"] { background: var(--ea-bg-soft) !important; }
-          /* Sidebar remains white for contrast */
           [data-testid="stSidebar"] { background: #ffffff !important; }
           [data-testid="stSidebar"] * { color: #0f172a !important; }
         </style>
@@ -437,16 +261,12 @@ def inject_soft_bg():
     )
 
 def inject_label_fix():
-    """Force all selectbox/radio/text labels to render black."""
     st.markdown(
         """
         <style>
         [data-testid="stSelectbox"] label,
         [data-testid="stRadio"] label,
-        [data-testid="stTextInput"] label {
-            color: #0f172a !important;
-            font-weight: 600 !important;
-        }
+        [data-testid="stTextInput"] label { color:#0f172a !important; font-weight:600 !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -454,21 +274,12 @@ def inject_label_fix():
 
 # --- PATCH (2): Helper to render a clean Entry Model table ---
 def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Performance"):
-    """
-    Render a simple, brand-aligned entry model performance table.
-
-    Required df columns: ["Entry_Model", "Trades", "Win %", "BE %", "Loss %"]
-    """
-    # Defensive: if df is empty or missing expected columns, render nothing
     expected = ["Entry_Model", "Trades", "Win %", "BE %", "Loss %"]
     if df is None or df.empty or any(col not in df.columns for col in expected):
         return
 
-    def fmt_int(v):
-        return "" if pd.isna(v) else f"{int(v)}"
-
-    def fmt_num(v, decimals=2):
-        return "" if pd.isna(v) else f"{float(v):.{decimals}f}"
+    def fmt_int(v): return "" if pd.isna(v) else f"{int(v)}"
+    def fmt_num(v, decimals=2): return "" if pd.isna(v) else f"{float(v):.{decimals}f}"
 
     header_html = (
         '<th class="text">Entry_Model</th>'
@@ -496,14 +307,11 @@ def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Perform
       <div class="table-wrap">
         <table class="entry-model-table">
           <thead><tr>{header_html}</tr></thead>
-          <tbody>
-            {''.join(rows_html)}
-          </tbody>
+          <tbody>{''.join(rows_html)}</tbody>
         </table>
       </div>
     </div>
     """
-
     st.markdown(table_html, unsafe_allow_html=True)
 
 # ---------------------------- data loading/cleaning ---------------------------
@@ -511,50 +319,33 @@ def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Perform
 def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
     if not (token and dbid):
         return pd.DataFrame()
-
     raw = load_trades_from_notion(token, dbid)
     if raw is None or raw.empty:
         return pd.DataFrame()
-
     df = raw.copy()
     df.columns = [c.strip() for c in df.columns]
-
     if "Closed RR" in df.columns:
         df["Closed RR"] = df["Closed RR"].apply(parse_closed_rr)
     if "PnL" in df.columns:
         df["PnL"] = pd.to_numeric(df["PnL"], errors="coerce")
-
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df["DayName"] = df["Date"].dt.day_name()
         df["Hour"] = df["Date"].dt.hour
-
     df["Instrument"] = df["Pair"].apply(infer_instrument) if "Pair" in df.columns else "Unknown"
     df["Session Norm"] = df.get("Session", pd.Series(index=df.index, dtype=object)).apply(normalize_session)
-
     if "Multi Entry Model Entry" in df.columns:
-        df["Entry Models List"] = df.apply(
-            lambda r: build_models_list(r.get("Entry Model"), r.get("Multi Entry Model Entry")),
-            axis=1,
-        )
+        df["Entry Models List"] = df.apply(lambda r: build_models_list(r.get("Entry Model"), r.get("Multi Entry Model Entry")), axis=1)
     else:
         df["Entry Models List"] = df.get("Entry Model", "").apply(lambda v: build_models_list(v, None))
-
     if "Entry Confluence" in df.columns:
         import re as _re
-        df["Entry Confluence List"] = (
-            df["Entry Confluence"].fillna("").astype(str).apply(
-                lambda s: [x.strip() for x in _re.split(r"[;,]", s) if x.strip()]
-            )
+        df["Entry Confluence List"] = df["Entry Confluence"].fillna("").astype(str).apply(
+            lambda s: [x.strip() for x in _re.split(r"[;,]", s) if x.strip()]
         )
     else:
         df["Entry Confluence List"] = [[] for _ in range(len(df))]
-
-    df["Outcome"] = df.apply(
-        lambda r: classify_outcome_from_fields(r.get("Result"), r.get("Closed RR"), r.get("PnL")),
-        axis=1,
-    )
-
+    df["Outcome"] = df.apply(lambda r: classify_outcome_from_fields(r.get("Result"), r.get("Closed RR"), r.get("PnL")), axis=1)
     if "Rating" in df.columns:
         df["Stars"] = df["Rating"].apply(lambda s: s.count("⭐") if isinstance(s, str) else None)
     if "Risk Management" in df.columns:
@@ -564,7 +355,6 @@ def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
         df["Duration Bin"] = df["Trade Duration"].apply(build_duration_bin)
     if "Account" in df.columns:
         df["Account Group"] = df["Account"].apply(normalize_account_group)
-
     has_date = df.get("Date").notna() if "Date" in df.columns else pd.Series(False, index=df.index)
     has_signal = (
         df.get("PnL").notna()
@@ -572,315 +362,301 @@ def load_live_df(token: str | None, dbid: str | None) -> pd.DataFrame:
         | df.get("Result", "").astype(str).str.strip().ne("")
         | df.get("Entry Model", "").astype(str).str.strip().ne("")
     ).fillna(False)
-
     return df[has_date & has_signal].copy()
 
 # ------------------------------- Connect page --------------------------------
-def render_connect_page(mobile: bool):
-    """
-    Light settings page (same look as Dashboard).
-    """
-    # Ensure same theme shell and header as dashboard
-    styler = apply_theme()   # locked to light
-    inject_global_css()
-    inject_header("light")
-    inject_soft_bg()  # <<< unified soft background
+# ---- OAuth helpers (PKCE + store) ----
+@st.cache_resource
+def _oauth_store(): return {}
+def _oauth_put(state: str, code_verifier: str): _oauth_store()[state] = {"code_verifier": code_verifier, "ts": time.time()}
+def _oauth_pop(state: str): return _oauth_store().pop(state, None)
+def _pkce_pair():
+    verifier = base64.urlsafe_b64encode(os.urandom(64)).decode().rstrip("=")
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    return verifier, challenge
 
-    # Scoped light overrides for this page
+def _oauth_client():
+    cid  = (_runtime_secret("NOTION_OAUTH_CLIENT_ID") or _runtime_secret("NOTION_CLIENT_ID"))
+    csec = (_runtime_secret("NOTION_OAUTH_CLIENT_SECRET") or _runtime_secret("NOTION_CLIENT_SECRET"))
+    ruri = (_runtime_secret("NOTION_OAUTH_REDIRECT_URI") or _runtime_secret("NOTION_REDIRECT_URI"))
+    return cid, csec, ruri
+
+def _exchange_code_for_token(code: str, code_verifier: str | None = None) -> dict | None:
+    client_id, client_secret, redirect_uri = _oauth_client()
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+    payload = {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri}
+    if code_verifier: payload["code_verifier"] = code_verifier
+    resp = requests.post(
+        "https://api.notion.com/v1/oauth/token",
+        headers={"Authorization": f"Basic {basic}", "Content-Type": "application/json"},
+        json=payload, timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+# NEW: prepare URL (does NOT redirect) so the UI button matches the PNG flow
+def _prepare_oauth_url() -> str | None:
+    client_id, _, redirect_uri = _oauth_client()
+    if not (client_id and redirect_uri):
+        return None
+    state = secrets.token_urlsafe(24)
+    verifier, challenge = _pkce_pair()
+    st.session_state["oauth_pending"] = {"state": state, "verifier": verifier}
+    _oauth_put(state, verifier)
+    params = {
+        "client_id": client_id, "response_type": "code", "owner": "user",
+        "redirect_uri": redirect_uri, "state": state,
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }
+    return "https://api.notion.com/v1/oauth/authorize?" + urlencode(params)
+
+def _start_notion_oauth():
+    # retained for legacy paths; not used by the new UI button
+    auth_url = _prepare_oauth_url()
+    if not auth_url:
+        st.error("Missing OAuth client settings. Check your secrets.")
+        return
+    st.markdown(f'<meta http-equiv="refresh" content="0; url={auth_url}">', unsafe_allow_html=True)
+
+def _handle_oauth_callback() -> bool:
+    qp = _get_all_query_params()
+    code = qp.get("code")[0] if isinstance(qp.get("code"), list) else qp.get("code")
+    rstate = qp.get("state")[0] if isinstance(qp.get("state"), list) else qp.get("state")
+    if not code or not rstate:
+        return False
+    rec = _oauth_pop(rstate)
+    verifier = (rec or {}).get("code_verifier") or (st.session_state.get("oauth_pending") or {}).get("verifier")
+    if not verifier:
+        st.session_state["oauth_callback_code"] = code
+        st.session_state.pop("oauth_pending", None)
+        _clear_query_params()
+        st.error("OAuth state verifier missing. Click Finalize sign-in below, or Connect again.")
+        return True
+    try:
+        data = _exchange_code_for_token(code, code_verifier=verifier)
+        access_token = data.get("access_token") if data else None
+        if not access_token:
+            raise RuntimeError("No access_token in Notion response")
+        st.session_state["override_NOTION_TOKEN"] = access_token
+        st.success("Connected to Notion via OAuth")
+        ws = data.get("workspace_name") or data.get("bot_id")
+        if ws: st.caption(f"Workspace: {ws}")
+    except Exception as e:
+        st.error(f"OAuth token exchange failed: {e}")
+    finally:
+        st.session_state.pop("oauth_pending", None)
+        _clear_query_params()
+        _st_rerun()
+    return True
+
+# -------------------- Database helpers -----------------
+NOTION_API_VERSION = _runtime_secret("NOTION_VERSION", "2022-06-28")
+
+def _extract_db_id_from_url_or_id(text: str) -> str | None:
+    if not text: return None
+    t = text.strip()
+    raw = t.replace("-", "")
+    if re.fullmatch(r"[0-9a-fA-F]{32}", raw): return raw.lower()
+    try:
+        u = urlparse(t); path = (u.path or "").replace("-", "")
+        m = re.search(r"([0-9a-fA-F]{32})", path)
+        if m: return m.group(1).lower()
+    except Exception: pass
+    return None
+
+def _verify_database_access(oauth_token: str | None, internal_token: str | None, dbid: str):
+    token = oauth_token or internal_token
+    if not token: return (False, None, "No Notion token available.")
+    headers = {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_API_VERSION, "Content-Type": "application/json"}
+    url = f"https://api.notion.com/v1/databases/{dbid}"
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200: return (True, 200, r.json())
+        else: return (False, r.status_code, r.text)
+    except Exception as e:
+        return (False, None, f"Request failed: {e}")
+
+# ---- Polished UI block to match the PNG exactly ------------------------------
+def _connect_page_css():
     st.markdown(
         f"""
         <style>
         :root {{ --brand: {BRAND_PURPLE}; }}
+        [data-testid="stSidebar"] * {{ color:#0f172a !important; }}
 
-        /* Sidebar text and content readable on light */
-        [data-testid="stSidebar"] * {{
-            color: #0f172a !important;
+        .connect-wrap {{ max-width: 980px; margin: 0 auto; }}
+        .ea-title {{
+            display:flex; align-items:center; gap:.6rem;
+            font-size:38px; line-height:1.2; font-weight:800; letter-spacing:-0.02em;
+            color:#0f172a; margin:6px 0 8px 0;
         }}
+        .ea-sub {{ color:#475569; font-size:16px; margin:0 0 16px 0; }}
+        .ea-card {{
+            background:#fff; border-radius:18px; box-shadow:0 8px 30px rgba(0,0,0,.06);
+            border:1px solid rgba(0,0,0,0.06); padding:24px 28px; margin: 10px 0 18px 0;
+        }}
+        .ea-divider {{ height:1px; background:#e5e7eb; margin:16px 0 12px 0; }}
+        .ea-step {{ font-size:22px; font-weight:800; color:#0f172a; margin: 6px 0 6px 0; }}
+        .ea-help {{ color:#475569; font-size:15px; margin-bottom:14px; }}
 
-        /* Settings wrapper scope */
-        .connect-scope, .connect-scope * {{
-            color: #0f172a !important;
+        .stButton>button {{
+            border-radius:12px; padding:12px 18px; font-weight:700;
+            border:1px solid rgba(0,0,0,0.06); box-shadow:0 2px 6px rgba(0,0,0,0.04);
         }}
+        .ea-primary .stButton>button {{ background:var(--brand); color:#fff; border-color:var(--brand); }}
+        .ea-secondary .stButton>button {{ background:#fff; color:#111827; }}
 
-        /* Inputs (force light text and border even on focus/hover) */
-        .connect-scope [data-testid="stTextInput"] input,
-        .connect-scope [data-testid="stPassword"] input,
-        .connect-scope [data-testid="stTextArea"] textarea {{
-            background: #ffffff !important;
-            color: #0f172a !important;
-            border: 1px solid #e5e7eb !important;
-            border-radius: 10px !important;
-            box-shadow: none !important;
-        }}
-        .connect-scope [data-testid="stTextInput"] input:focus,
-        .connect-scope [data-testid="stPassword"] input:focus,
-        .connect-scope [data-testid="stTextArea"] textarea:focus {{
-            border: 1px solid var(--brand) !important;
-            box-shadow: 0 0 0 2px rgba(72,0,255,0.12) !important;
-            outline: none !important;
-        }}
-        .connect-scope ::placeholder {{
-            color: #64748b !important;
-            opacity: 1 !important;
-        }}
-        /* Eye icon area */
-        .connect-scope [data-testid="stTextInput"] button {{
-            background: #ffffff !important;
-            border-left: 1px solid #e5e7eb !important;
-        }}
-        .connect-scope [data-testid="stTextInput"] button svg {{ color:#0f172a !important; }}
-
-        /* Buttons */
-        .connect-scope .stButton > button {{
-            background: #ffffff !important;
-            color: #0f172a !important;
-            border: 1px solid #e5e7eb !important;
-            border-radius: 12px !important;
-            padding: 0.5rem 1rem !important;
-            box-shadow: none !important;
-            cursor: pointer !important;
-        }}
-        .connect-scope .stButton > button:hover,
-        .connect-scope .stButton > button:focus {{
-            background: #f9fafb !important;
-            color: #0f172a !important;
-            border-color: #e5e7eb !important;
+        .stTextInput>div>div>input {{
+            border: 2px solid #e5e7eb !important; border-radius:12px !important;
+            padding:12px 14px !important; font-size:15px !important;
         }}
 
-        /* Expander headers - light; open area stays white */
-        .connect-scope [data-testid="stExpander"] > details {{
-            background: #ffffff !important;
-            border: 1px solid #e5e7eb !important;
-            border-radius: 12px !important;
-            overflow: hidden !important;
-        }}
-        .connect-scope [data-testid="stExpander"] summary,
-        .connect-scope [data-testid="stExpander"] div[role="button"] {{
-            background: #f3f4f6 !important;
-            color: #0f172a !important;
-            border-bottom: 1px solid #e5e7eb !important;
-            padding: .65rem .9rem !important;
-        }}
-        .connect-scope [data-testid="stExpander"] > details[open] > div {{
-            background: #ffffff !important;
-            padding: .75rem .9rem !important;
-        }}
+        .ea-watermark {{ position:fixed; right:18px; bottom:18px; opacity:.18; z-index:0; pointer-events:none; }}
+        .ea-watermark img {{ width:160px; max-width:28vw; }}
 
-        /* Inline code pills in guide - light */
-        .connect-scope code {{
-            background: #eef2ff !important;
-            color: #0f172a !important;
-            padding: 2px 6px;
-            border-radius: 6px;
-        }}
-
-        /* Success/info alerts readable */
-        .connect-scope .stAlert {{
-            background: #ecfdf5 !important;
-            border: 1px solid #bbf7d0 !important;
-            color: #064e3b !important;
-            border-radius: 12px !important;
-        }}
-        .connect-scope .stAlert * {{ color: #064e3b !important; }}
-
-        /* Smaller logo so content sits higher */
-        .header-logo-img {{
-            transform: scale(0.7);
-            transform-origin: center;
-            margin-bottom: 0.25rem !important;
-        }}
-
-        /* Kill stray legacy dark boxes */
-        .css-1d391kg, .css-1kyxreq, .css-1avcm0n {{
-            background: transparent !important;
-        }}
-
-        /***** Visual walkthrough styles *****/
-        .ea-walk {{ font-size: 15.5px; line-height: 1.55; }}
-        .ea-walk h4 {{
-          margin: 0.75rem 0 0.5rem 0; 
-          font-size: 16px; 
-          font-weight: 800; 
-          color: #0f172a;
-        }}
-        .ea-quicklinks {{
-          display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 10px 0;
-        }}
-        .ea-link {{
-          display: inline-flex; align-items: center; gap: 6px;
-          padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 10px;
-          background: #ffffff; color: #0f172a; text-decoration: none; font-weight: 600;
-        }}
-        .ea-link:hover {{ background: #f9fafb; }}
-        .ea-steps {{ 
-          display: grid; 
-          grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); 
-          gap: 10px; 
-          align-items: stretch;
-        }}
-        .ea-step {{
-          background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px;
-          padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start;
-          overflow: hidden; 
-        }}
-        .ea-num {{
-          width: 26px; height: 26px; flex: 0 0 26px; border-radius: 8px;
-          display: inline-flex; align-items: center; justify-content: center;
-          font-weight: 800; background: #eef2ff; color: var(--brand);
-        }}
-        .ea-step > div {{
-          min-width: 0;                   
-          white-space: normal;            
-          overflow-wrap: anywhere;        
-          word-break: break-word;         
-        }}
-        .ea-mono {{ 
-          background: #eef2ff; padding: 2px 6px; border-radius: 6px; 
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; 
-          overflow-wrap: anywhere; 
-          word-break: break-all;
-        }}
-        .ea-check, .ea-troubleshoot {{
-          margin-top: 8px; padding: 10px 12px; border-radius: 12px; 
-          border: 1px solid #e5e7eb; background: #ffffff;
-        }}
-        .ea-list {{ margin: 6px 0 0 0; padding-left: 18px; }}
-        .ea-kbd {{ padding: 1px 6px; border: 1px solid #e5e7eb; border-bottom-width: 2px; border-radius: 6px; background: #fff; font-weight: 700; }}
-
-        .ea-id {{
-          color: var(--brand);
-          font-weight: 800;
+        @media (max-width: 800px) {{
+          .ea-title {{ font-size:30px; }}
+          .ea-step {{ font-size:19px; }}
+          .ea-card {{ padding:18px 18px; }}
         }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    # --- Mobile inline NAV controls (Page + Layout) ---
-    if mobile:
-        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
-        with st.container():
-            st.markdown("### Navigation")
-            # Use the SAME keys so selections persist across desktop/mobile
-            page_val = st.selectbox(
-                "Page",
-                ["Dashboard", "Connect Notion"],
-                index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1,
-                key="nav_page",
-            )
-            layout_val = st.selectbox(
-                "Layout",
-                ["Desktop Layout", "Mobile Layout"],
-                index=1 if st.session_state.get("layout_choice", "Desktop Layout") == "Mobile Layout" else 0,
-                key="layout_choice",
-            )
+def render_connect_page(mobile: bool):
+    styler = apply_theme()   # locked to light
+    inject_global_css()
+    inject_header("light")
+    inject_soft_bg()
+    _connect_page_css()
+
+    if _handle_oauth_callback():
+        pass
 
     with st.container():
-        st.markdown('<div class="connect-scope">', unsafe_allow_html=True)
+        st.markdown('<div class="connect-wrap">', unsafe_allow_html=True)
 
-        st.title("Connect Notion")
-        st.write(
-            "Use your **own Notion credentials** for this session only. "
-            "These are **not** saved on any server."
-        )
+        # Header exactly like mock
+        st.markdown('<div class="ea-title">Connect Notion</div>', unsafe_allow_html=True)
+        # (Removed the descriptive subtitle under the title as requested)
 
-        # --- Visual walkthrough ---
-        with st.expander("Visual walkthrough", expanded=True):
-            st.markdown(
-                """
-                <div class="ea-walk">
-                  <div class="ea-quicklinks">
-                    <a class="ea-link" href="https://www.notion.so/my-integrations" target="_blank">🔗 Open Notion Integrations</a>
-                    <a class="ea-link" href="https://www.notion.so" target="_blank">🏠 Open Notion</a>
-                  </div>
+        st.markdown('<div class="ea-card">', unsafe_allow_html=True)
 
-                  <h4>🔑 Create your Notion token</h4>
-                  <div class="ea-steps">
-                    <div class="ea-step"><span class="ea-num">1</span><div><strong>Go to</strong> <span class="ea-mono">notion.com/my-integrations</span> → click <strong>+ New integration</strong>.</div></div>
-                    <div class="ea-step"><span class="ea-num">2</span><div><strong>Name it</strong> (e.g., <strong>Edge Analysis</strong>) and pick your workspace.</div></div>
-                    <div class="ea-step"><span class="ea-num">3</span><div>Under <strong>Capabilities</strong>, enable <strong>Read content</strong> → <strong>Submit</strong>.</div></div>
-                    <div class="ea-step"><span class="ea-num">4</span><div><strong>Copy</strong> the <em>Internal Integration Token</em> (starts with <span class="ea-mono">secret_</span>). That’s your <strong>Notion Token</strong>.</div></div>
-                  </div>
+        # STEP 1
+        st.markdown('<div class="ea-step">Step 1 — Connect with Notion (OAuth)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ea-help">Use OAuth to authorize securely. This token is stored for your session only.</div>', unsafe_allow_html=True)
 
-                  <h4>🗂️ Get your Database ID</h4>
-                  <div class="ea-steps">
-                    <div class="ea-step"><span class="ea-num">1</span><div>Open your database. If it’s inline, choose <strong>Open as page</strong>.</div></div>
-                    <div class="ea-step"><span class="ea-num">2</span><div>Click <strong>Share</strong> → <strong>Connect to / Add connections</strong> → choose your integration (e.g., <em>Edge Analysis</em>).</div></div>
-                    <div class="ea-step"><span class="ea-num">3</span><div>
-                      Click the <strong>⋯</strong> (top-right) → <strong>Copy link</strong>. The URL looks like:<br>
-                      <span class="ea-mono">https://www.notion.so/My-DB-Name-<span class="ea-id">12345678abcd1234ef567890abcd1234</span>?v=...</span><br>
-                      The 32-character part before <span class="ea-mono">?v=</span> is your <strong>Database ID</strong> (dashes are fine).
-                    </div></div>
-                  </div>
+        _cid, _csec, _ruri = _oauth_client()
+        missing = []
+        if not _cid: missing.append("Client ID")
+        if not _csec: missing.append("Client Secret")
+        if not _ruri: missing.append("Redirect URI")
+        if missing:
+            st.warning("OAuth secrets not fully configured: " + ", ".join(missing) +
+                       ". Add either NOTION_OAUTH_* or NOTION_* to your `.streamlit/secrets.toml`.")
 
-                  <div class="ea-check">
-                    <strong>✅ Quick checklist</strong>
-                    <ul class="ea-list">
-                      <li>Token starts with <span class="ea-mono">secret_</span></li>
-                      <li>Database is <strong>Connected</strong> to your integration via <strong>Share → Connect</strong></li>
-                      <li>Have a 32-character <strong>Database ID</strong></li>
-                    </ul>
-                  </div>
-
-                  <div class="ea-troubleshoot">
-                    <strong>🛠️ Troubleshooting</strong>
-                    <ul class="ea-list">
-                      <li>Don’t see <span class="ea-kbd">Connect to</span>? Duplicate the DB to a workspace you own.</li>
-                      <li>No ID in the link? Make sure it’s a <strong>full page</strong> database, then copy link again.</li>
-                    </ul>
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        current_token = _runtime_secret("NOTION_TOKEN")
-        current_dbid = _runtime_secret("DATABASE_ID")
+        # Callback fallback flow
+        if st.session_state.get("oauth_callback_code"):
+            st.info("We received a callback from Notion but your session was reset.")
+            if st.button("Finalize sign-in", key="btn_finalize_oauth"):
+                code = st.session_state.get("oauth_callback_code")
+                try:
+                    data = _exchange_code_for_token(code, code_verifier=None)
+                    access_token = data.get("access_token") if data else None
+                    if not access_token: raise RuntimeError("No access_token in Notion response")
+                    st.session_state["override_NOTION_TOKEN"] = access_token
+                    st.success("Notion connected via OAuth")
+                    ws = data.get("workspace_name") or data.get("bot_id")
+                    if ws: st.caption(f"Workspace: {ws}")
+                except Exception as e:
+                    st.error(f"OAuth token exchange failed: {e}")
+                finally:
+                    st.session_state.pop("oauth_callback_code", None)
+                    _st_rerun()
 
         c1, c2 = st.columns(2)
         with c1:
-            notion_token = st.text_input(
-                "Notion Token",
-                value="" if not current_token else current_token,
-                type="password",
-                key="settings_notion_token",
-            )
+            st.markdown('<div class="ea-primary">', unsafe_allow_html=True)
+            auth_url = _prepare_oauth_url()
+            if auth_url:
+                st.link_button("Connect Notion", auth_url)
+            else:
+                st.button("Connect Notion", disabled=True)
+            st.markdown('</div>', unsafe_allow_html=True)
         with c2:
-            database_id = st.text_input(
-                "Database ID",
-                value="" if not current_dbid else current_dbid,
-                key="settings_database_id",
-            )
-
-        a, b, _ = st.columns([1, 1, 2])
-        with a:
-            if st.button("Use for this session", key="btn_use_session"):
-                if notion_token and database_id:
-                    st.session_state["override_NOTION_TOKEN"] = notion_token.strip()
-                    st.session_state["override_DATABASE_ID"] = database_id.strip()
-                    st.success("All set! Switch to the Dashboard.")
-                else:
-                    st.error("Please provide both Notion Token and Database ID.")
-        with b:
-            if st.button("Clear session credentials", key="btn_clear_session"):
+            st.markdown('<div class="ea-secondary">', unsafe_allow_html=True)
+            if st.button("Disconnect", key="btn_oauth_clear"):
                 st.session_state.pop("override_NOTION_TOKEN", None)
-                st.session_state.pop("override_DATABASE_ID", None)
-                st.info("Session overrides cleared.")
+                st.session_state.pop("oauth_pending", None)
+                st.session_state.pop("oauth_callback_code", None)
+                st.info("Disconnected.")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        st.caption("Tip: you can also prefill via URL query params: `?notion_token=...&database_id=...`")
-        st.markdown('</div>', unsafe_allow_html=True)
+        if st.session_state.get("override_NOTION_TOKEN"):
+            st.success("Connected (token stored for this session only)")
+        elif st.session_state.get("oauth_pending"):
+            st.info("Completing Notion sign-in...")
+
+        st.markdown('<div class="ea-divider"></div>', unsafe_allow_html=True)
+
+        # STEP 2
+        st.markdown('<div class="ea-step">Step 2 — Paste your Notion database link</div>', unsafe_allow_html=True)
+
+        oauth_bundle = st.session_state.get("override_NOTION_TOKEN")
+        oauth_token  = oauth_bundle if isinstance(oauth_bundle, str) else st.session_state.get("override_NOTION_TOKEN")
+
+        db_link_default = st.session_state.get("db_link_input", "")
+        db_link = st.text_input(
+            "Database link or ID",
+            value=db_link_default,
+            key="db_link_input",
+            placeholder="https://www.notion.so/My-DB-Name-1234567abcd1234ef567890abcd1234",
+        )
+        if db_link:
+            dbid = _extract_db_id_from_url_or_id(db_link)
+            if not dbid:
+                st.error("That doesn’t look like a valid Notion database link or ID.")
+            else:
+                st.caption(f"Detected database ID: `{dbid}`")
+                ok, status, info = _verify_database_access(
+                    oauth_token=oauth_token,
+                    internal_token=None,
+                    dbid=dbid,
+                )
+                if ok:
+                    st.success("Database verified")
+                    st.session_state["override_DATABASE_ID"] = dbid
+                else:
+                    if status == 403:
+                        st.warning("Access denied (403). In Notion, open the database → ⋯ → Add connections → choose your app/integration, then try again.")
+                        if st.button("Verify again"):
+                            _st_rerun()
+                    elif status == 404:
+                        st.error("Notion can’t find that database (404). Ensure it’s a database (not a page) and the ID/link is correct.")
+                    else:
+                        st.error(f"Couldn’t verify the database. {info}")
+
+        st.caption("Tip: You can also prefill via URL query params like `?notion_token=...&database_id=...`")
+        st.markdown('</div>', unsafe_allow_html=True)  # end big card
+
+        # Watermark
+        logo_path = ASSETS_DIR / "edge_logo.png"
+        if logo_path.exists():
+            try:
+                _wm_b64 = base64.b64encode(logo_path.read_bytes()).decode()
+                st.markdown(f'<div class="ea-watermark"><img alt="Edge Analysis" src="data:image/png;base64,{_wm_b64}" /></div>', unsafe_allow_html=True)
+            except Exception:
+                pass
+
+        st.markdown('</div>', unsafe_allow_html=True)  # /connect-wrap
 
 # -------------------------- Mobile CSS helper (PATCH) -------------------------
 def _inject_mobile_css(layout_mode: str):
-    """
-    If Mobile Layout: hide Streamlit's sidebar.
-    """
     if layout_mode != "mobile":
         return
-
     st.markdown("""
     <style>
-      /* Hide the Streamlit sidebar entirely in Mobile Layout */
       [data-testid="stSidebar"] { display: none !important; }
       [data-testid="stAppViewContainer"] > .main { padding-left: 0 !important; }
     </style>
@@ -888,26 +664,17 @@ def _inject_mobile_css(layout_mode: str):
 
 # -------------------------------- Dashboard -----------------------------------
 def render_dashboard(mobile: bool):
-    # Purple accent banner text
     st.markdown(
         f"""
         <style>
         :root {{ --brand: {BRAND_PURPLE}; }}
-        .live-banner {{
-            text-align: center;
-            margin: -8px 0 16px 0;
-            font-weight: 800;
-            font-size: 22px;
-            color: var(--brand);
-        }}
+        .live-banner {{ text-align:center; margin:-8px 0 16px 0; font-weight:800; font-size:22px; color:var(--brand); }}
+        [data-testid="stSidebar"] {{ background:#fff !important; }}
+        [data-testid="stSidebar"] * {{ color:#0f172a !important; }}
 
-        /* Ensure sidebar is light and text is black on Dashboard */
-        [data-testid="stSidebar"] {{
-            background: #ffffff !important;
-        }}
-        [data-testid="stSidebar"] * {{
-            color: #0f172a !important;
-        }}
+        /* Dashboard watermark */
+        .ea-watermark {{ position:fixed; right:18px; bottom:18px; opacity:.18; z-index:0; pointer-events:none; }}
+        .ea-watermark img {{ width:160px; max-width:28vw; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -916,7 +683,7 @@ def render_dashboard(mobile: bool):
     styler = apply_theme()   # locked to light
     inject_global_css()
     inject_header("light")
-    inject_soft_bg()  # <<< unified soft background
+    inject_soft_bg()
 
     token = _runtime_secret("NOTION_TOKEN")
     dbid = _runtime_secret("DATABASE_ID")
@@ -927,109 +694,61 @@ def render_dashboard(mobile: bool):
     st.markdown("<div class='live-banner'>Live Notion Connected</div>", unsafe_allow_html=True)
 
     if not (token and dbid):
-        st.warning("Add Notion credentials in **Settings → Connect Notion** to load your data.")
+        st.warning("Add Notion credentials in Settings → Connect Notion to load your data.")
         return
     if df.empty:
         st.info("No data yet. Add trades, adjust filters, or check credentials.")
         return
 
-    # ---------- Build options (used by both desktop sidebar and mobile inline) ----------
     instruments = sorted(df["Instrument"].dropna().unique().tolist())
     instruments = [i for i in instruments if i != "DUMMY ROW"]
 
-    def _inst_label(v: str) -> str:
-        return "GOLD" if v == "Gold" else v
+    def _inst_label(v: str) -> str: return "GOLD" if v == "Gold" else v
 
     inst_opts = ["All"] + instruments
     em_opts = ["All"] + MODEL_SET
     sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
 
-    # ---------------- Sidebar Filters (desktop only) ---------------------------
     if not mobile:
         st.sidebar.markdown("### Filters")
-        sel_inst = st.sidebar.selectbox(
-            "Instrument",
-            inst_opts,
-            index=0,
-            format_func=_inst_label,
-            key="filters_inst_select",
-        )
-        sel_em = st.sidebar.selectbox(
-            "Entry Model",
-            em_opts,
-            index=0,
-            format_func=lambda x: x,
-            key="filters_em_select",
-        )
-        sel_sess = st.sidebar.selectbox(
-            "Session",
-            sess_opts,
-            index=0,
-            format_func=lambda x: x,
-            key="filters_sess_select",
-        )
+        sel_inst = st.sidebar.selectbox("Instrument", inst_opts, index=0, format_func=_inst_label, key="filters_inst_select")
+        sel_em = st.sidebar.selectbox("Entry Model", em_opts, index=0, format_func=lambda x: x, key="filters_em_select")
+        sel_sess = st.sidebar.selectbox("Session", sess_opts, index=0, format_func=lambda x: x, key="filters_sess_select")
     else:
-        # Mobile inline controls: Navigation first, then Filters
         st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
         with st.container():
             st.markdown("### Navigation")
-            _ = st.selectbox(
-                "Page",
-                ["Dashboard", "Connect Notion"],
-                index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1,
-                key="nav_page",
-            )
-            _ = st.selectbox(
-                "Layout",
-                ["Desktop Layout", "Mobile Layout"],
-                index=1 if st.session_state.get("layout_choice", "Desktop Layout") == "Mobile Layout" else 0,
-                key="layout_choice",
-            )
-
+            _ = st.selectbox("Page", ["Dashboard", "Connect Notion"],
+                             index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1, key="nav_page")
+            _ = st.selectbox("Layout", ["Desktop Layout", "Mobile Layout"],
+                             index=1 if st.session_state.get("layout_choice", "Desktop Layout") == "Mobile Layout" else 0,
+                             key="layout_choice")
             st.markdown("### Filters")
             c1, c2 = st.columns(2, gap="small")
             with c1:
-                sel_inst = st.selectbox(
-                    "Instrument",
-                    inst_opts,
-                    index=inst_opts.index(st.session_state.get("filters_inst_select", "All"))
-                    if st.session_state.get("filters_inst_select", "All") in inst_opts else 0,
-                    format_func=_inst_label,
-                    key="filters_inst_select",
-                )
+                sel_inst = st.selectbox("Instrument", inst_opts,
+                                        index=inst_opts.index(st.session_state.get("filters_inst_select", "All"))
+                                        if st.session_state.get("filters_inst_select", "All") in inst_opts else 0,
+                                        format_func=_inst_label, key="filters_inst_select")
             with c2:
-                sel_sess = st.selectbox(
-                    "Session",
-                    sess_opts,
-                    index=sess_opts.index(st.session_state.get("filters_sess_select", "All"))
-                    if st.session_state.get("filters_sess_select", "All") in sess_opts else 0,
-                    format_func=lambda x: x,
-                    key="filters_sess_select",
-                )
-            sel_em = st.selectbox(
-                "Entry Model",
-                em_opts,
-                index=em_opts.index(st.session_state.get("filters_em_select", "All"))
-                if st.session_state.get("filters_em_select", "All") in em_opts else 0,
-                format_func=lambda x: x,
-                key="filters_em_select",
-            )
+                sel_sess = st.selectbox("Session", sess_opts,
+                                        index=sess_opts.index(st.session_state.get("filters_sess_select", "All"))
+                                        if st.session_state.get("filters_sess_select", "All") in sess_opts else 0,
+                                        key="filters_sess_select")
+            sel_em = st.selectbox("Entry Model", em_opts,
+                                  index=em_opts.index(st.session_state.get("filters_em_select", "All"))
+                                  if st.session_state.get("filters_em_select", "All") in em_opts else 0,
+                                  key="filters_em_select")
 
-    # ---------------- Apply Filters -------------------------------------------
     mask = pd.Series(True, index=df.index)
-    if sel_inst != "All":
-        mask &= (df["Instrument"] == sel_inst)
-    if sel_em != "All":
-        mask &= df["Entry Models List"].apply(lambda lst: sel_em in lst if isinstance(lst, list) else False)
-    if sel_sess != "All":
-        mask &= (df["Session Norm"] == sel_sess)
+    if sel_inst != "All": mask &= (df["Instrument"] == sel_inst)
+    if sel_em != "All": mask &= df["Entry Models List"].apply(lambda lst: sel_em in lst if isinstance(lst, list) else False)
+    if sel_sess != "All": mask &= (df["Session Norm"] == sel_sess)
 
     f = df[mask].copy()
     f["PnL_from_RR"] = f["Closed RR"].fillna(0.0)
-
     stats = generate_overall_stats(f)
 
-    # ---------------- KPIs / cards -------------------------------------------
     if "Closed RR" in f.columns:
         wins_only = f[f["Outcome"] == "Win"]
         avg_rr_wins = float(wins_only["Closed RR"].mean()) if not wins_only.empty else 0.0
@@ -1046,35 +765,36 @@ def render_dashboard(mobile: bool):
         ("AVG CLOSED RR (WINS ONLY)", f"{avg_rr_wins:.2f}"),
         ("TOTAL PNL (FROM RR)", f"{total_pnl_rr:,.2f}"),
     ]:
-        value_html = (
-            f"<div class='value' style='color: var(--brand);'>{value}</div>"
-            if label == "TOTAL PNL (FROM RR)"
-            else f"<div class='value'>{value}</div>"
-        )
-        st.markdown(
-            f"<div class='kpi'><div class='label'>{label}</div>{value_html}</div>",
-            unsafe_allow_html=True,
-        )
+        value_html = (f"<div class='value' style='color: var(--brand);'>{value}</div>"
+                      if label == "TOTAL PNL (FROM RR)" else f"<div class='value'>{value}</div>")
+        st.markdown(f"<div class='kpi'><div class='label'>{label}</div>{value_html}</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("<div class='spacer-12'></div>", unsafe_allow_html=True)
 
-    # Tabs (charts/tables). Any selectboxes inside will also pick up the global CSS.
     render_all_tabs(f, df, styler, show_light_table)
 
+    # Watermark (Dashboard)
+    logo_path = ASSETS_DIR / "edge_logo.png"
+    if logo_path.exists():
+        try:
+            _wm_b64 = base64.b64encode(logo_path.read_bytes()).decode()
+            st.markdown(f'<div class="ea-watermark"><img alt="Edge Analysis" src="data:image/png;base64,{_wm_b64}" /></div>',
+                        unsafe_allow_html=True)
+        except Exception:
+            pass
+
 # --------------------------------- Router -------------------------------------
+
 def _detect_default_layout_index() -> int:
     layout_qp = (_get_query_param("layout") or "").lower()
-    if layout_qp in {"m", "mobile", "phone"}:
-        return 1
+    if layout_qp in {"m", "mobile", "phone"}: return 1
     return 0
 
 def main() -> None:
-    # (NEW) Global dropdown styling injected BEFORE any selectboxes are drawn.
     _inject_dropdown_css()
     inject_soft_bg()
     inject_label_fix()
 
-    # Seed defaults if missing
     if "layout_choice" not in st.session_state:
         st.session_state["layout_choice"] = "Desktop Layout" if _detect_default_layout_index() == 0 else "Mobile Layout"
     if "nav_page" not in st.session_state:
@@ -1085,25 +805,16 @@ def main() -> None:
     st.session_state["layout_index"] = 1 if layout_mode == "mobile" else 0
     st.session_state["layout_mode"] = layout_mode
 
-    # Desktop: show sidebar controls. Mobile: hide sidebar (inline controls rendered in pages).
     if layout_mode == "desktop":
         st.sidebar.markdown("## Settings")
-        st.sidebar.selectbox(
-            "Page",
-            ["Dashboard", "Connect Notion"],
-            index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1,
-            key="nav_page",
-        )
-        st.sidebar.selectbox(
-            "Layout",
-            ["Desktop Layout", "Mobile Layout"],
-            index=_detect_default_layout_index(),
-            key="layout_choice",
-        )
+        st.sidebar.selectbox("Page", ["Dashboard", "Connect Notion"],
+                             index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1,
+                             key="nav_page")
+        st.sidebar.selectbox("Layout", ["Desktop Layout", "Mobile Layout"],
+                             index=_detect_default_layout_index(), key="layout_choice")
     else:
         _inject_mobile_css(layout_mode)
 
-    # Route to page
     if st.session_state.get("nav_page", "Dashboard") == "Connect Notion":
         render_connect_page(mobile=(layout_mode == "mobile"))
     else:
