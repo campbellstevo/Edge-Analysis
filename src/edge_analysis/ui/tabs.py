@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import altair as alt
 import streamlit as st
+from pathlib import Path  # PATCH: for template download paths
+import re  # for splitting entry model strings
 
 # NEW: import the three clean renderers from components
 from edge_analysis.ui.components import (
@@ -10,6 +12,9 @@ from edge_analysis.ui.components import (
     render_session_performance_table,
     render_day_performance_table,
 )
+
+# PATCH: auto-detect adapter for multiple templates
+from edge_analysis.data.template_adapter import adapt_auto
 
 CONFLUENCE_OPTIONS = ["DIV", "Sweep", "DIV & Sweep"]
 
@@ -97,6 +102,85 @@ def _to_alt_values(df: pd.DataFrame):
         else:
             d[c] = col.astype(object)
     return d.to_dict(orient="records")
+
+# NEW: normalize "Entry Models List" across templates
+def _ensure_entry_models_list(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Guarantee a column 'Entry Models List' that is a list[str] for each row.
+    Accepts alternate columns like 'Entry Model' or 'Entry Models' and splits
+    on common delimiters: comma, semicolon, slash, pipe, plus.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+
+    if "Entry Models List" in out.columns:
+        def _coerce_to_list(v):
+            if isinstance(v, (list, tuple)):
+                return list(v)
+            if pd.isna(v) or v == "":
+                return []
+            return [str(v)]
+        out["Entry Models List"] = out["Entry Models List"].apply(_coerce_to_list)
+        return out
+
+    # Try alternate source columns
+    lower_map = {str(c).strip().lower(): c for c in out.columns}
+    alt_col = None
+    for key in ("entry models", "entry model", "entry models list"):
+        if key in lower_map:
+            alt_col = lower_map[key]
+            break
+
+    def _split_models(x):
+        if isinstance(x, (list, tuple)):
+            return [str(i).strip() for i in x if str(i).strip()]
+        if pd.isna(x):
+            return []
+        s = str(x)
+        parts = [p.strip() for p in re.split(r"[;,/|+]", s) if p.strip()]
+        return parts if parts else ([] if s.strip() == "" else [s.strip()])
+
+    if alt_col:
+        out["Entry Models List"] = out[alt_col].apply(_split_models)
+    else:
+        # no usable column; create empty lists to avoid KeyError downstream
+        out["Entry Models List"] = [[] for _ in range(len(out))]
+
+    return out
+
+# NEW: normalize/derive 'Instrument' across templates
+def _ensure_instrument_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure there's an 'Instrument' column by copying/deriving it from common
+    alternates like Pair, Symbol, Ticker, Market, Asset.
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+
+    lower_map = {str(c).strip().lower(): c for c in out.columns}
+    def pick(*names):
+        for n in names:
+            if n in lower_map:
+                return lower_map[n]
+        return None
+
+    # If already present, try to fill NaNs from alternates
+    if "Instrument" in out.columns:
+        alt = pick("pair", "symbol", "ticker", "market", "asset")
+        if alt is not None:
+            mask = out["Instrument"].isna() | (out["Instrument"].astype(str).str.strip() == "")
+            out.loc[mask, "Instrument"] = out.loc[mask, alt]
+        return out
+
+    # Otherwise create it from the first available alternate
+    alt = pick("instrument", "pair", "symbol", "ticker", "market", "asset")
+    if alt is not None:
+        out["Instrument"] = out[alt]
+    # If none found, we just return without Instrument; caller must handle
+    return out
 
 # ───────────────────────────── Growth (patched to auto-detect date col) ──────
 def _growth_tab(f: pd.DataFrame, df_all: pd.DataFrame, styler):
@@ -228,25 +312,59 @@ def _growth_tab(f: pd.DataFrame, df_all: pd.DataFrame, styler):
 # ------------------------------ Other tabs -----------------------------------
 def _entry_models_tab(f: pd.DataFrame, show_table):
     st.markdown('<div class="section">', unsafe_allow_html=True)
-    # Title comes from the renderer; don't duplicate here
-    if f.empty:
+
+    if f is None or f.empty:
         st.info("No trades for current filters.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    # Ensure we have a proper list column, regardless of template
+    f_norm = _ensure_entry_models_list(f)
+
+    if "Entry Models List" not in f_norm.columns:
+        st.info("No entry model data.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    # Keep only rows that have at least one model
+    em = f_norm.copy()
+    em = em[em["Entry Models List"].apply(lambda x: isinstance(x, (list, tuple)) and len(x) > 0)]
+    if em.empty:
+        st.info("No entry model data.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    # One row per model
+    em = em.explode("Entry Models List", ignore_index=True)
+    em = em[em["Entry Models List"].astype(str).str.strip() != ""]
+    if em.empty:
+        st.info("No entry model data.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    counted = em[em["Outcome"].isin(["Win", "BE", "Loss"])]
+    if counted.empty:
+        st.info("No counted outcomes yet.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    rates = []
+    for model, group in counted.groupby("Entry Models List"):
+        r = outcome_rates_from(group)
+        rates.append(
+            dict(
+                Entry_Model=str(model),
+                Trades=len(group),
+                **{"Win %": r["win_rate"], "BE %": r["be_rate"], "Loss %": r["loss_rate"]},
+            )
+        )
+
+    if rates:
+        entry_model_df = pd.DataFrame(rates).sort_values("Win %", ascending=False)
+        render_entry_model_table(entry_model_df, title="Entry Model Performance")
     else:
-        em = f.explode('Entry Models List')
-        em = em[em['Entry Models List'].notna()]
-        if em.empty:
-            st.info("No entry model data.")
-        else:
-            rates = []
-            counted = em[em['Outcome'].isin(['Win','BE','Loss'])]
-            for model, group in counted.groupby('Entry Models List'):
-                r = outcome_rates_from(group)
-                rates.append(dict(Entry_Model=model, Trades=len(group), **{"Win %": r['win_rate'], "BE %": r['be_rate'], "Loss %": r['loss_rate']}))
-            if rates:
-                entry_model_df = pd.DataFrame(rates).sort_values('Win %', ascending=False)
-                render_entry_model_table(entry_model_df, title="Entry Model Performance")
-            else:
-                st.info("No counted outcomes yet.")
+        st.info("No counted outcomes yet.")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 def _sessions_tab(f: pd.DataFrame, show_table):
@@ -325,21 +443,41 @@ def _data_tab(f_all: pd.DataFrame, show_table):
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    def _bucket(val: str) -> str | None:
-        s = (str(val) if val is not None else "").strip().upper()
-        if s in {"NASDAQ", "GOLD", "AUDUSD"}:
-            return s
-        return None
+    # Normalize/derive Instrument first
+    g = _ensure_instrument_column(f_all.copy())
 
-    g = f_all.copy()
-    g["__bucket"] = g["Instrument"].apply(_bucket)
-    g = g[g["__bucket"].notna()]
-    if g.empty:
-        st.info("No entries found for NASDAQ, GOLD or AUDUSD in the current slice.")
+    if "Instrument" not in g.columns or g["Instrument"].isna().all() or (g["Instrument"].astype(str).str.strip() == "").all():
+        st.info("No instrument-like column found (looked for Instrument/Pair/Symbol/Ticker).")
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    # Completeness
+    # Map to the three buckets we care about
+    def _bucket(val: str) -> str | None:
+        s = (str(val) if val is not None else "").upper().strip()
+        s_simple = re.sub(r"[^A-Z0-9]", "", s)
+
+        # GOLD
+        if s_simple in {"XAUUSD", "GOLD"} or "GOLD" in s_simple:
+            return "GOLD"
+
+        # NASDAQ family
+        if s_simple in {"US100", "NAS100", "NASDAQ", "NQ"} or "NAS" in s_simple or "US100" in s_simple or "NQ" in s_simple:
+            return "NASDAQ"
+
+        # AUDUSD
+        if "AUDUSD" in s_simple:
+            return "AUDUSD"
+
+        return None
+
+    g["__bucket"] = g["Instrument"].apply(_bucket)
+    g = g[g["__bucket"].notna()]
+    if g.empty:
+        st.info("No entries matched NASDAQ, GOLD or AUDUSD in the current slice.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    # Completeness (robust to missing cols)
     if "Is Complete" in g.columns:
         g["__complete"] = g["Is Complete"].fillna(False)
     elif {"Outcome Canonical", "Closed RR Num"} <= set(g.columns):
@@ -381,17 +519,190 @@ def _data_tab(f_all: pd.DataFrame, show_table):
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+# --------------------------- Losing Streaks tab ------------------------------
+def _prob_at_least_k_losses_exact(n: int, k: int, win_p: float) -> float:
+    """
+    Exact probability of seeing >= k consecutive losses in n Bernoulli trials
+    with success prob win_p. Uses DP on the longest current losing run.
+    """
+    lose_p = 1.0 - win_p
+    dp = [[0.0] * (k) for _ in range(n + 1)]
+    dp[0][0] = 1.0
+    for i in range(n):
+        for j in range(k):
+            p = dp[i][j]
+            if p == 0.0:
+                continue
+            # Win -> reset losing run to 0
+            dp[i + 1][0] += p * win_p
+            # Loss -> increase losing run by 1 (if reaching k, that path exits to 'at least k')
+            if j + 1 < k:
+                dp[i + 1][j + 1] += p * lose_p
+    prob_no_run = sum(dp[n])
+    return 1.0 - prob_no_run
+
+def _losing_streaks_tab(f: pd.DataFrame, styler):
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+    st.markdown("### 🔥 Losing Streak Probability Matrix")
+    st.caption("Probability of seeing **at least** X consecutive losses within N trades")
+
+    # Controls
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        n_trades = st.slider("Number of trades (N)", 20, 200, 50, 5, key="ls_n")
+    with c2:
+        max_streak = st.slider("Max streak shown (X)", 2, 15, 10, 1, key="ls_kmax")
+    with c3:
+        step_pct = st.selectbox("Win rate step", ["1%", "5%"], index=1, key="ls_step")
+        step = 0.01 if step_pct == "1%" else 0.05
+
+    wr_info = outcome_rates_from(_prep_perf_df(f) if f is not None else pd.DataFrame())
+    current_wr = wr_info.get("win_rate", 0.0)
+
+    win_rates = np.round(np.arange(step, 1.0, step), 4)
+    streaks = list(range(2, max_streak + 1))
+
+    rows = []
+    for p in win_rates:
+        for s in streaks:
+            prob = _prob_at_least_k_losses_exact(n_trades, s, p)
+            rows.append({"Win %": int(round(p * 100)), "Streak": s, "Probability": prob})
+
+    df = pd.DataFrame(rows)
+
+    chart = (
+        alt.Chart(df)
+        .mark_rect()
+        .encode(
+            x=alt.X("Streak:O", title="Consecutive losing trades (X)"),
+            y=alt.Y("Win %:O", title="Win rate"),
+            color=alt.Color(
+                "Probability:Q",
+                scale=alt.Scale(domain=[0, 1], range=["#1f1b2e", "#4800ff", "#ea3943"]),
+                legend=None,
+            ),
+            tooltip=[
+                alt.Tooltip("Win %:O", title="Win rate"),
+                alt.Tooltip("Streak:O", title="Losing streak"),
+                alt.Tooltip("Probability:Q", title="Probability", format=".1%"),
+            ],
+        )
+        .properties(height=420)
+    )
+    st.altair_chart(styler(chart), use_container_width=True)
+
+    pivot = (df.pivot(index="Win %", columns="Streak", values="Probability") * 100).round(1)
+    st.markdown("#### 📊 Table")
+    st.dataframe(
+        pivot.astype(str) + "%",
+        use_container_width=True,
+        height=min(420, 56 + 28 * len(win_rates)),
+    )
+
+    st.markdown(
+        f"<div class='muted'>N = <b>{n_trades}</b> trades • Your current WR (from filtered data): "
+        f"<b>{current_wr:.2f}%</b></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ----------------------- PATCH: Connect Notion templates UI -------------------
+def render_connect_notion_templates_ui():
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+    st.markdown("## Connect Notion / Templates")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### My Template")
+        p1 = Path("assets/templates/my_template.csv")
+        if p1.exists():
+            st.download_button(
+                "⬇️ Download My Template (CSV)",
+                data=p1.read_bytes(),
+                file_name="my_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.warning("Missing: assets/templates/my_template.csv")
+
+    with c2:
+        st.markdown("### TradingPools Template")
+        p2 = Path("assets/templates/tradingpools_template.csv")
+        if p2.exists():
+            st.download_button(
+                "⬇️ Download TradingPools Template (CSV)",
+                data=p2.read_bytes(),
+                file_name="tradingpools_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.warning("Missing: assets/templates/tradingpools_template.csv")
+
+    st.divider()
+    st.subheader("Upload your filled template")
+    up = st.file_uploader(
+        "CSV/TSV/XLSX supported. Both templates work.",
+        type=["csv","tsv","xlsx","xls"],
+        key="upload_templates_dual"
+    )
+
+    if up:
+        uploads = Path("uploads")
+        uploads.mkdir(parents=True, exist_ok=True)
+        fpath = uploads / up.name
+        with open(fpath, "wb") as f:
+            f.write(up.getbuffer())
+
+        df, mapping_name = adapt_auto(fpath, "config/templates")
+        if mapping_name:
+            st.success(f"Detected template: **{mapping_name}**")
+        else:
+            st.warning("No mapping detected. Add a JSON mapping under config/templates/ if needed.")
+
+        # quick sanity checks
+        issues = []
+        for col in ["Date","Pair","Outcome","Closed RR","Is Complete"]:
+            if col not in df.columns:
+                issues.append(f"Missing required column: {col}")
+        if "Outcome" in df.columns:
+            bad = ~df["Outcome"].isin(["Win","BE","Loss"]) & df["Outcome"].notna()
+            if bad.any():
+                issues.append(f"Unexpected Outcome values: {list(df.loc[bad,'Outcome'].astype(str).unique()[:5])}")
+
+        if issues:
+            st.info("Checks:\n\n- " + "\n- ".join(issues))
+
+        st.dataframe(df.head(25), use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ----------------------- UPDATED render_all_tabs (patch applied) --------------
 def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
     # completion-aware slice
     f_perf = _prep_perf_df(f)
     df_all_safe = df_all.copy() if df_all is not None else df_all
 
-    # Removed Confluence and Coach for now
-    t1, t2, t3, t4, t5 = st.tabs(
-        ["Growth","Entry Models","Sessions","Time & Days","Data"]
+    # 🔥 Dashboard tabs WITHOUT “Connect Notion” + Losing Streaks
+    t1, t2, t3, t4, t5, t6 = st.tabs(
+        ["Growth", "Entry Models", "Sessions", "Time & Days", "Data", "Losing Streaks"]
     )
-    with t1: _growth_tab(f_perf, df_all_safe, styler)
-    with t2: _entry_models_tab(f_perf, show_table)
-    with t3: _sessions_tab(f_perf, show_table)
-    with t4: _time_days_tab(f_perf, show_table)      # Days only (Mon–Fri)
-    with t5: _data_tab(df_all_safe, show_table)      # filtered-all completeness
+
+    with t1:
+        _growth_tab(f_perf, df_all_safe, styler)
+
+    with t2:
+        _entry_models_tab(f_perf, show_table)
+
+    with t3:
+        _sessions_tab(f_perf, show_table)
+
+    with t4:
+        _time_days_tab(f_perf, show_table)      # Days only (Mon–Fri)
+
+    with t5:
+        _data_tab(df_all_safe, show_table)      # filtered-all completeness
+
+    with t6:
+        _losing_streaks_tab(f_perf, styler)
