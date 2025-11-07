@@ -150,7 +150,7 @@ st.markdown("""
 if FAVICON.exists():
     try:
         favicon_b64 = base64.b64encode(FAVICON.read_bytes()).decode()
-        st.markdown(f"""<link rel=\"shortcut icon\" href=\"data:image/png;base64,{favicon_b64}\">""", unsafe_allow_html=True)
+        st.markdown(f"""<link rel="shortcut icon" href="data:image/png;base64,{favicon_b64}">""", unsafe_allow_html=True)
     except Exception:
         pass
 
@@ -251,8 +251,8 @@ def inject_soft_bg():
         """
         <style>
           :root { --ea-bg-soft: #f5f6fb; }
-          [data-testid="stAppViewContainer"] { background: var(--ea-bg-soft) !important; }
-          header[data-testid="stHeader"], [data-testid="stToolbar"] { background: var(--ea-bg-soft) !important; }
+          [data-testid="stAppViewContainer"] { background: var(--ea-bg_soft) !important; }
+          header[data-testid="stHeader"], [data-testid="stToolbar"] { background: var(--ea-bg_soft) !important; }
           [data-testid="stSidebar"] { background: #ffffff !important; }
           [data-testid="stSidebar"] * { color: #0f172a !important; }
         </style>
@@ -675,6 +675,34 @@ def render_dashboard(mobile: bool):
         /* Dashboard watermark */
         .ea-watermark {{ position:fixed; right:18px; bottom:18px; opacity:.18; z-index:0; pointer-events:none; }}
         .ea-watermark img {{ width:160px; max-width:28vw; }}
+
+        /* Empty-state hero */
+        .ea-empty-wrap {{
+            text-align:center;
+            margin: 32px 0 18px 0;
+        }}
+        .ea-empty-title {{
+            font-size:24px;
+            font-weight:800;
+            color:var(--brand);
+            letter-spacing:-0.01em;
+        }}
+        .ea-empty-btn .stButton>button {{
+            background:var(--brand);
+            color:#ffffff;
+            border:none;
+            border-radius:999px;
+            padding:12px 24px;
+            font-weight:700;
+            box-shadow:0 8px 22px rgba(72,0,255,0.22);
+        }}
+        .ea-empty-btn .stButton>button:hover {{
+            filter:brightness(0.96);
+        }}
+        @media (max-width: 768px) {{
+          .ea-empty-wrap {{ margin: 24px 0 14px 0; }}
+          .ea-empty-title {{ font-size:20px; }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -691,11 +719,35 @@ def render_dashboard(mobile: bool):
     with st.spinner("Fetching trades from Notion…"):
         df = load_live_df(token, dbid)
 
-    st.markdown("<div class='live-banner'>Live Notion Connected</div>", unsafe_allow_html=True)
-
-    if not (token and dbid):
-        st.warning("Add Notion credentials in Settings → Connect Notion to load your data.")
+    # ---- Banner + CTA depending on connection status -------------------------
+    if token and dbid:
+        # Connected: keep the existing banner
+        st.markdown("<div class='live-banner'>Live Notion Connected</div>", unsafe_allow_html=True)
+    else:
+        # Not connected: hero-style empty state only (no extra banner line)
+        with st.container():
+            st.markdown(
+                """
+                <div class="ea-empty-wrap">
+                  <div class="ea-empty-title">No Notion template is connected yet</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            col_left, col_mid, col_right = st.columns([1, 2, 1])
+            with col_mid:
+                st.markdown('<div class="ea-empty-btn">', unsafe_allow_html=True)
+                if st.button(
+                    "Connect Notion",
+                    key="btn_connect_template",
+                    use_container_width=True,
+                ):
+                    # Set target page for next run (avoid writing nav_page after widget)
+                    st.session_state["nav_page_target"] = "Connect Notion"
+                    _st_rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
         return
+
     if df.empty:
         st.info("No data yet. Add trades, adjust filters, or check credentials.")
         return
@@ -799,6 +851,10 @@ def main() -> None:
         st.session_state["layout_choice"] = "Desktop Layout" if _detect_default_layout_index() == 0 else "Mobile Layout"
     if "nav_page" not in st.session_state:
         st.session_state["nav_page"] = "Dashboard"
+
+    # NEW: promote nav_page_target -> nav_page before any nav_page widgets
+    if "nav_page_target" in st.session_state:
+        st.session_state["nav_page"] = st.session_state.pop("nav_page_target")
 
     layout_choice_ss = st.session_state.get("layout_choice", "Desktop Layout")
     layout_mode = "mobile" if layout_choice_ss == "Mobile Layout" else "desktop"
