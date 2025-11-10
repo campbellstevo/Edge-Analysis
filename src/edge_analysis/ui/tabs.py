@@ -5,6 +5,9 @@ import altair as alt
 import streamlit as st
 from pathlib import Path  # PATCH: for template download paths
 import re  # for splitting entry model strings
+import os
+from datetime import time as dt_time
+from zoneinfo import ZoneInfo
 
 # NEW: import the three clean renderers from components
 from edge_analysis.ui.components import (
@@ -17,6 +20,262 @@ from edge_analysis.ui.components import (
 from edge_analysis.data.template_adapter import adapt_auto
 
 CONFLUENCE_OPTIONS = ["DIV", "Sweep", "DIV & Sweep"]
+
+
+# Small label helper for instruments/assets
+def _asset_label(name: str) -> str:
+    return "GOLD" if str(name) == "Gold" else str(name)
+
+
+# ─────────────────────────── Session/Date helpers (NEW) ──────────────────────
+def _extract_iso_from_notion(v):
+    """Accept Notion date property dicts/lists or plain strings/numbers."""
+    try:
+        if isinstance(v, dict):
+            return v.get("start") or v.get("date") or v.get("timestamp") or v.get("name")
+        if isinstance(v, (list, tuple)) and v:
+            return _extract_iso_from_notion(v[0])
+    except Exception:
+        pass
+    return v
+
+
+def _coerce_datetime_series(df: pd.DataFrame, tz_name: str = "UTC"):
+    """
+    Return a UTC-aware datetime Series from a variety of column schemes:
+    - single datetime-like column (Date & Time / Datetime / Opened At / Timestamp / Created...)
+    - separate Date + Time columns
+    - only Date column (defaults to 00:00)
+    Handles numbers as epoch s/ms and Notion dicts.
+    """
+    cand_single = [
+        "Date & Time",
+        "Datetime",
+        "Entry Datetime",
+        "Opened At",
+        "Timestamp",
+        "Created",
+        "Created At",
+        "Entry Time (UTC)",
+        "Time & Date",
+    ]
+    cand_date = ["Date", "Trade Date", "Entry Date"]
+    cand_time = ["Time", "Trade Time", "Entry Time"]
+
+    # 1) Single datetime-like
+    for c in cand_single:
+        if c in df.columns:
+            s = df[c].map(_extract_iso_from_notion)
+
+            def _num_to_ts(x):
+                try:
+                    if x is None or (isinstance(x, float) and pd.isna(x)):
+                        return None
+                    if isinstance(x, (int, float)) and not isinstance(x, bool):
+                        x = int(x)
+                        if x > 10**11:  # ms
+                            return pd.to_datetime(x, unit="ms", utc=True)
+                        return pd.to_datetime(x, unit="s", utc=True)
+                    return x
+                except Exception:
+                    return x
+
+            s = s.map(_num_to_ts)
+            s_dt = pd.to_datetime(s, utc=True, errors="coerce")
+            break
+    else:
+        s_dt = None
+
+    # 2) Separate Date + Time
+    if s_dt is None:
+        dcol = next((c for c in cand_date if c in df.columns), None)
+        tcol = next((c for c in cand_time if c in df.columns), None)
+        if dcol and tcol:
+            s_date = pd.to_datetime(df[dcol].map(_extract_iso_from_notion), errors="coerce")
+            s_time = df[tcol].astype(str).str.strip().replace({"": "00:00"})
+            s_dt = pd.to_datetime(
+                s_date.dt.strftime("%Y-%m-%d") + " " + s_time,
+                errors="coerce",
+            )
+
+    # 3) Only Date
+    if s_dt is None:
+        dcol = next((c for c in cand_date if c in df.columns), None)
+        if dcol:
+            s_date = pd.to_datetime(df[dcol].map(_extract_iso_from_notion), errors="coerce")
+            s_dt = pd.to_datetime(s_date.dt.strftime("%Y-%m-%d") + " 00:00", errors="coerce")
+
+    if s_dt is None:
+        return None  # caller will handle
+
+    # Localize → UTC
+    try:
+        tz = ZoneInfo(str(tz_name or "UTC"))
+        if s_dt.dt.tz is None:
+            s_dt = s_dt.dt.tz_localize(tz).dt.tz_convert("UTC")
+        else:
+            s_dt = s_dt.dt.tz_convert("UTC")
+    except Exception:
+        # Fallback: assume UTC if localization fails
+        if s_dt.dt.tz is None:
+            s_dt = s_dt.dt.tz_localize("UTC")
+        else:
+            s_dt = s_dt.dt.tz_convert("UTC")
+
+    return s_dt
+
+
+# --- DST-safe market-local session classifier --------------------------------
+# Sessions defined in THEIR LOCAL MARKET TIME (handles DST correctly)
+_SESSIONS = {
+    "Asia": {
+        "tz": ZoneInfo("Asia/Tokyo"),
+        "start": dt_time(9, 0),
+        "end": dt_time(18, 0),
+    },  # 09:00–18:00 Tokyo
+    "London": {
+        "tz": ZoneInfo("Europe/London"),
+        "start": dt_time(8, 0),
+        "end": dt_time(17, 0),
+    },  # 08:00–17:00 London
+    "New York": {
+        "tz": ZoneInfo("America/New_York"),
+        "start": dt_time(8, 0),
+        "end": dt_time(17, 0),
+    },  # 08:00–17:00 NY
+}
+
+
+def _time_in_window(local_dt: pd.Timestamp, start: dt_time, end: dt_time) -> bool:
+    """
+    True if local_dt's local time is within [start, end).
+    Handles windows that cross midnight (not used here but robust).
+    """
+    if pd.isna(local_dt):
+        return False
+    t = local_dt.timetz()
+    if start <= end:
+        return start <= t < end
+    return (t >= start) or (t < end)
+
+
+def _classify_session_market_local(ts_aware: pd.Timestamp) -> str | None:
+    """
+    Classify into Asia / London / New York using each market's local clock.
+    If multiple sessions overlap, choose by priority: New York > London > Asia.
+    (Only used as a fallback now; primary source is the template Session field.)
+    """
+    if ts_aware is None or pd.isna(ts_aware):
+        return None
+
+    active = []
+    for name, cfg in _SESSIONS.items():
+        local = ts_aware.astimezone(cfg["tz"])
+        if _time_in_window(local, cfg["start"], cfg["end"]):
+            active.append(name)
+
+    if not active:
+        return "Other"
+
+    for winner in ["New York", "London", "Asia"]:
+        if winner in active:
+            return winner
+
+
+def _clean_session_value(v):
+    """
+    Normalise session labels coming from the template/Notion.
+    This is the new primary source of truth for sessions.
+    """
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+
+    sl = s.lower()
+    if "asia" in sl:
+        return "Asia"
+    if "london" in sl:
+        return "London"
+    if "new york" in sl or sl in {"ny", "ny session"}:
+        return "New York"
+    # Any other custom label, just return cleaned
+    return s
+
+
+def _ensure_session_and_day(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure we have 'Session Norm' and 'DayName'.
+
+    Priority:
+      1) If 'Session Norm' already present and non-null, keep it.
+         Still compute DayName if missing.
+      2) Else, if 'Session' column exists, derive Session Norm
+         from that (template/Notion-driven, NOT from time).
+      3) Only if neither Session Norm nor Session exists do we
+         fall back to time-based classification from timestamps.
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+
+    # ---- Case 1: Session Norm already exists (from adapter/template) ----
+    if "Session Norm" in out.columns and not out["Session Norm"].isna().all():
+        # Clean labels a bit
+        out["Session Norm"] = out["Session Norm"].map(_clean_session_value)
+
+        # Still compute DayName if missing/empty
+        if "DayName" not in out.columns or out["DayName"].isna().all():
+            s_dt = _coerce_datetime_series(out, tz_name=os.getenv("EDGE_SESSIONS_TZ", "Australia/Sydney"))
+            if s_dt is not None:
+                try:
+                    local_tz = ZoneInfo(os.getenv("EDGE_LOCAL_TZ", "Australia/Sydney"))
+                    out["DayName"] = s_dt.dt.tz_convert(local_tz).dt.day_name()
+                except Exception:
+                    out["DayName"] = s_dt.dt.day_name()
+        return out
+
+    # ---- Case 2: No Session Norm, but we DO have a Session column ----
+    if "Session" in out.columns:
+        out["Session Norm"] = out["Session"].map(_clean_session_value)
+
+        # DayName: derive from datetime if possible, else from Date
+        if "DayName" not in out.columns or out["DayName"].isna().all():
+            s_dt = _coerce_datetime_series(out, tz_name=os.getenv("EDGE_SESSIONS_TZ", "Australia/Sydney"))
+            if s_dt is not None:
+                try:
+                    local_tz = ZoneInfo(os.getenv("EDGE_LOCAL_TZ", "Australia/Sydney"))
+                    out["DayName"] = s_dt.dt.tz_convert(local_tz).dt.day_name()
+                except Exception:
+                    out["DayName"] = s_dt.dt.day_name()
+            elif "Date" in out.columns:
+                dts = pd.to_datetime(out["Date"], errors="coerce")
+                out["DayName"] = dts.dt.day_name()
+        return out
+
+    # ---- Case 3: No Session Norm and no Session → LAST-RESORT time-based ----
+    s_dt_utc = _coerce_datetime_series(out, tz_name=os.getenv("EDGE_SESSIONS_TZ", "Australia/Sydney"))
+    if s_dt_utc is None:
+        out["Session Norm"] = None
+        if "DayName" not in out.columns:
+            out["DayName"] = None
+        return out
+
+    out["__ts_utc"] = s_dt_utc
+
+    # Classify using market-local clocks (DST-safe)
+    out["Session Norm"] = out["__ts_utc"].map(_classify_session_market_local)
+
+    # DayName in local user zone (Australia/Sydney default, DST-aware)
+    try:
+        local_tz = ZoneInfo(os.getenv("EDGE_LOCAL_TZ", "Australia/Sydney"))
+        out["DayName"] = out["__ts_utc"].dt.tz_convert(local_tz).dt.day_name()
+    except Exception:
+        out["DayName"] = out["__ts_utc"].dt.day_name()  # fallback UTC
+
+    return out.drop(columns=["__ts_utc"])
+
 
 # ---- Completion-aware helpers (non-breaking) --------------------------------
 def _prep_perf_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -47,46 +306,99 @@ def _prep_perf_df(df: pd.DataFrame) -> pd.DataFrame:
             out["Closed RR"] = out["Closed RR Num"]
         else:
             mask_nan = out["Closed RR"].isna()
-            out.loc[mask_nan, "Closed RR"] = out.loc[mask_nan, "Closed RR Num"]
+            out.loc[mask_nan, "Closed RR"] = out["Closed RR Num"]
+
+    # 4) Ensure Session Norm + DayName derived (now template-driven when Session exists)
+    try:
+        out = _ensure_session_and_day(out)
+    except Exception:
+        # fail-safe: keep going without sessions/days
+        pass
 
     return out
 
 
 def outcome_rates_from(df):
-    if df.empty or 'Outcome' not in df.columns:
-        return dict(total=0, counted=0, wins=0, bes=0, losses=0, win_rate=0.0, be_rate=0.0, loss_rate=0.0)
-    counted = df[df['Outcome'].isin(['Win', 'BE', 'Loss'])]
+    if df.empty or "Outcome" not in df.columns:
+        return dict(
+            total=0,
+            counted=0,
+            wins=0,
+            bes=0,
+            losses=0,
+            win_rate=0.0,
+            be_rate=0.0,
+            loss_rate=0.0,
+        )
+    counted = df[df["Outcome"].isin(["Win", "BE", "Loss"])]
     counted_n = len(counted)
-    wins  = int(counted['Outcome'].eq("Win").sum())
-    bes   = int(counted['Outcome'].eq("BE").sum())
-    losses= int(counted['Outcome'].eq("Loss").sum())
-    wr = round((wins   / max(1, counted_n)) * 100.0, 2)
-    br = round((bes    / max(1, counted_n)) * 100.0, 2)
+    wins = int(counted["Outcome"].eq("Win").sum())
+    bes = int(counted["Outcome"].eq("BE").sum())
+    losses = int(counted["Outcome"].eq("Loss").sum())
+    wr = round((wins / max(1, counted_n)) * 100.0, 2)
+    br = round((bes / max(1, counted_n)) * 100.0, 2)
     lr = round((losses / max(1, counted_n)) * 100.0, 2)
-    return dict(total=len(df), counted=counted_n, wins=wins, bes=bes, losses=losses,
-                win_rate=wr, be_rate=br, loss_rate=lr)
+    return dict(
+        total=len(df),
+        counted=counted_n,
+        wins=wins,
+        bes=bes,
+        losses=losses,
+        win_rate=wr,
+        be_rate=br,
+        loss_rate=lr,
+    )
+
 
 def generate_overall_stats(df: pd.DataFrame):
     if df.empty:
-        return dict(total=0,wins=0,losses=0,bes=0,win_rate=0.0,loss_rate=0.0,be_rate=0.0,avg_rr=0.0,avg_pnl=0.0,total_pnl=0.0,unknown=0)
+        return dict(
+            total=0,
+            wins=0,
+            losses=0,
+            bes=0,
+            win_rate=0.0,
+            loss_rate=0.0,
+            be_rate=0.0,
+            avg_rr=0.0,
+            avg_pnl=0.0,
+            total_pnl=0.0,
+            unknown=0,
+        )
     rates = outcome_rates_from(df)
-    unknown = rates['total'] - rates['counted']
+    unknown = rates["total"] - rates["counted"]
 
     # Avg Closed RR from winning trades only
-    if {'Closed RR','Outcome'} <= set(df.columns):
-        wins_only = df[df['Outcome'] == 'Win']
-        avg_rr = float(wins_only['Closed RR'].mean()) if not wins_only.empty and not wins_only['Closed RR'].isna().all() else 0.0
+    if {"Closed RR", "Outcome"} <= set(df.columns):
+        wins_only = df[df["Outcome"] == "Win"]
+        avg_rr = (
+            float(wins_only["Closed RR"].mean())
+            if not wins_only.empty and not wins_only["Closed RR"].isna().all()
+            else 0.0
+        )
     else:
         avg_rr = 0.0
 
-    avg_pnl = float(df['PnL'].mean()) if 'PnL' in df.columns and not df['PnL'].isna().all() else 0.0
-    total_pnl = float(df['PnL'].sum()) if 'PnL' in df.columns and not df['PnL'].isna().all() else 0.0
-    return dict(total=rates['total'],wins=rates['wins'],losses=rates['losses'],bes=rates['bes'],
-                win_rate=rates['win_rate'],loss_rate=rates['loss_rate'],be_rate=rates['be_rate'],
-                avg_rr=avg_rr,avg_pnl=avg_pnl,total_pnl=total_pnl,unknown=unknown)
+    avg_pnl = float(df["PnL"].mean()) if "PnL" in df.columns and not df["PnL"].isna().all() else 0.0
+    total_pnl = float(df["PnL"].sum()) if "PnL" in df.columns and not df["PnL"].isna().all() else 0.0
+    return dict(
+        total=rates["total"],
+        wins=rates["wins"],
+        losses=rates["losses"],
+        bes=rates["bes"],
+        win_rate=rates["win_rate"],
+        loss_rate=rates["loss_rate"],
+        be_rate=rates["be_rate"],
+        avg_rr=avg_rr,
+        avg_pnl=avg_pnl,
+        total_pnl=total_pnl,
+        unknown=unknown,
+    )
+
 
 def _to_alt_values(df: pd.DataFrame):
-    if df is None or len(df)==0: return []
+    if df is None or len(df) == 0:
+        return []
     d = df.reset_index(drop=True).copy()
     for c in d.columns:
         col = d[c]
@@ -103,6 +415,7 @@ def _to_alt_values(df: pd.DataFrame):
             d[c] = col.astype(object)
     return d.to_dict(orient="records")
 
+
 # NEW: normalize "Entry Models List" across templates
 def _ensure_entry_models_list(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -116,12 +429,14 @@ def _ensure_entry_models_list(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
     if "Entry Models List" in out.columns:
+
         def _coerce_to_list(v):
             if isinstance(v, (list, tuple)):
                 return list(v)
             if pd.isna(v) or v == "":
                 return []
             return [str(v)]
+
         out["Entry Models List"] = out["Entry Models List"].apply(_coerce_to_list)
         return out
 
@@ -150,6 +465,7 @@ def _ensure_entry_models_list(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
+
 # NEW: normalize/derive 'Instrument' across templates
 def _ensure_instrument_column(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -161,6 +477,7 @@ def _ensure_instrument_column(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
     lower_map = {str(c).strip().lower(): c for c in out.columns}
+
     def pick(*names):
         for n in names:
             if n in lower_map:
@@ -182,6 +499,7 @@ def _ensure_instrument_column(df: pd.DataFrame) -> pd.DataFrame:
     # If none found, we just return without Instrument; caller must handle
     return out
 
+
 # ───────────────────────────── Growth (patched to auto-detect date col) ──────
 def _growth_tab(f: pd.DataFrame, df_all: pd.DataFrame, styler):
     st.markdown('<div class="section">', unsafe_allow_html=True)
@@ -189,35 +507,34 @@ def _growth_tab(f: pd.DataFrame, df_all: pd.DataFrame, styler):
     # Use ONLY the complete slice
     if f is None or f.empty:
         st.info("No dated rows yet. Add some trades or adjust filters.")
-        st.markdown('</div>', unsafe_allow_html=True); return
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
     g = f.copy()
 
     # --- Find a usable date column ---
     date_col = None
-    if 'Date' in g.columns:
-        date_col = 'Date'
+    if "Date" in g.columns:
+        date_col = "Date"
     else:
         for c in g.columns:
             cl = str(c).strip().lower()
-            if cl == 'date' or 'date' in cl or 'time' in cl:
+            if cl == "date" or "date" in cl or "time" in cl:
                 date_col = c
                 break
 
     if not date_col:
         st.warning("No date-like column found in complete trades.")
         st.info("No dated rows yet. Add some trades or adjust filters.")
-        st.markdown('</div>', unsafe_allow_html=True); return
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
     # --- Coerce to real datetimes ---
-    g['__Date'] = (
-        g[date_col].astype(str)
-                    .str.replace(r"\s*\(GMT.*\)$", "", regex=True)
-    )
-    g['__Date'] = pd.to_datetime(g['__Date'], errors='coerce')
+    g["__Date"] = g[date_col].astype(str).str.replace(r"\s*\(GMT.*\)$", "", regex=True)
+    g["__Date"] = pd.to_datetime(g["__Date"], errors="coerce")
 
     # Drop NaT
-    g = g[g['__Date'].notna()].copy()
+    g = g[g["__Date"].notna()].copy()
     if g.empty:
         with st.expander("Debug: date parsing", expanded=False):
             try:
@@ -225,89 +542,160 @@ def _growth_tab(f: pd.DataFrame, df_all: pd.DataFrame, styler):
             except Exception:
                 pass
         st.info("No dated rows yet. Add some trades or adjust filters.")
-        st.markdown('</div>', unsafe_allow_html=True); return
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
     # Remove timezone if present
     try:
-        if getattr(g['__Date'].dt, 'tz', None) is not None:
-            g['__Date'] = g['__Date'].dt.tz_localize(None)
+        if getattr(g["__Date"].dt, "tz", None) is not None:
+            g["__Date"] = g["__Date"].dt.tz_localize(None)
     except Exception:
         pass
 
     # Ensure PnL_from_RR exists (prefer numeric RR if present)
-    if 'PnL_from_RR' not in g.columns:
-        rr_col = 'Closed RR Num' if 'Closed RR Num' in g.columns else 'Closed RR'
-        g['PnL_from_RR'] = g.get(rr_col, 0.0).fillna(0.0)
+    if "PnL_from_RR" not in g.columns:
+        rr_col = "Closed RR Num" if "Closed RR Num" in g.columns else "Closed RR"
+        g["PnL_from_RR"] = g.get(rr_col, 0.0).fillna(0.0)
 
-    # Controls
-    c1, c2, _ = st.columns([1, 1, 2])
+    # Controls (only Time Bucket now; Win Rate Mode is always cumulative)
+    c1, _, _ = st.columns([1, 1, 2])
     with c1:
-        bucket = st.selectbox("Time Bucket", ["Day", "Week", "Month"], index=1, key="growth_bucket")
-    with c2:
-        wr_mode = st.selectbox("Win Rate Mode", ["Cumulative", "Rolling (7 trades)"], index=0, key="growth_wr")
+        bucket = st.selectbox(
+            "Time Bucket",
+            ["Day", "Week", "Month"],
+            index=1,
+            key="growth_bucket",
+        )
 
     # Sort and bucket
-    g = g.sort_values('__Date').copy()
+    g = g.sort_values("__Date").copy()
     if bucket == "Day":
-        g['Bucket'] = g['__Date'].dt.floor("D"); axis_fmt = "%b %d"
+        g["Bucket"] = g["__Date"].dt.floor("D")
+        axis_fmt = "%b %d"
     elif bucket == "Week":
-        per = g['__Date'].dt.to_period("W-MON")
+        per = g["__Date"].dt.to_period("W-MON")
         g = g[per.notna()].copy()
-        g['Bucket'] = per[per.notna()].apply(lambda r: r.start_time); axis_fmt = "%b %d"
+        g["Bucket"] = per[per.notna()].apply(lambda r: r.start_time)
+        axis_fmt = "%b %d"
     else:
-        per = g['__Date'].dt.to_period("M")
+        per = g["__Date"].dt.to_period("M")
         g = g[per.notna()].copy()
-        g['Bucket'] = per[per.notna()].apply(lambda r: r.start_time); axis_fmt = "%b %Y"
+        g["Bucket"] = per[per.notna()].apply(lambda r: r.start_time)
+        axis_fmt = "%b %Y"
 
     # Equity (RR)
-    eq_df = g.groupby('Bucket', as_index=False)['PnL_from_RR'].sum().rename(columns={'PnL_from_RR':'PnLBucket'})
-    eq_df['CumPnL'] = eq_df['PnLBucket'].fillna(0).cumsum()
+    eq_df = (
+        g.groupby("Bucket", as_index=False)["PnL_from_RR"]
+        .sum()
+        .rename(columns={"PnL_from_RR": "PnLBucket"})
+    )
+    eq_df["CumPnL"] = eq_df["PnLBucket"].fillna(0).cumsum()
 
-    x_time = alt.X('Bucket:T', title=None, axis=alt.Axis(format=axis_fmt, labelAngle=0, labelLimit=140), scale=alt.Scale(nice=False, padding=0))
-    pnl_vals = _to_alt_values(eq_df[['Bucket', 'CumPnL']])
+    x_time = alt.X(
+        "Bucket:T",
+        title=None,
+        axis=alt.Axis(format=axis_fmt, labelAngle=0, labelLimit=140),
+        scale=alt.Scale(nice=False, padding=0),
+    )
+    pnl_vals = _to_alt_values(eq_df[["Bucket", "CumPnL"]])
 
-    # Win rate
-    wr = g[['__Date', 'Bucket', 'Outcome']].dropna()
-    wr = wr[wr['Outcome'].isin(['Win', 'BE', 'Loss'])]
+    # Win rate (always cumulative)
+    wr = g[["__Date", "Bucket", "Outcome"]].dropna()
+    wr = wr[wr["Outcome"].isin(["Win", "BE", "Loss"])]
     wr_vals = []
     if not wr.empty:
-        if wr_mode == "Cumulative":
-            wr2 = wr.groupby('Bucket').agg(trades=('Outcome','count'), wins=('Outcome', lambda s: (s=="Win").sum())).reset_index()
-            wr2['CumTrades'] = wr2['trades'].cumsum(); wr2['CumWins'] = wr2['wins'].cumsum()
-            wr2['Win %'] = np.where(wr2['CumTrades']>0, (wr2['CumWins']/wr2['CumTrades'])*100.0, 0.0)
-            wr_plot = wr2[['Bucket','Win %']].copy()
-        else:
-            wr_sorted = wr.sort_values('__Date').copy()
-            wr_sorted['IsWin'] = wr_sorted['Outcome'].eq("Win").astype(float)
-            wr_sorted['Rolling Win %'] = wr_sorted.groupby('Bucket')['IsWin'].apply(lambda s: s.rolling(7, min_periods=1).mean()*100.0).values
-            wr_plot = wr_sorted.groupby('Bucket', as_index=False).apply(lambda x: x.iloc[-1]).reset_index(drop=True)[['Bucket','Rolling Win %']].rename(columns={'Rolling Win %':'Win %'})
-        wr_plot['Win %'] = wr_plot['Win %'].round(2)
-        wr_vals = _to_alt_values(wr_plot[['Bucket','Win %']])
+        wr2 = (
+            wr.groupby("Bucket")
+            .agg(
+                trades=("Outcome", "count"),
+                wins=("Outcome", lambda s: (s == "Win").sum()),
+            )
+            .reset_index()
+        )
+        wr2["CumTrades"] = wr2["trades"].cumsum()
+        wr2["CumWins"] = wr2["wins"].cumsum()
+        wr2["Win %"] = np.where(
+            wr2["CumTrades"] > 0,
+            (wr2["CumWins"] / wr2["CumTrades"]) * 100.0,
+            0.0,
+        )
+        wr_plot = wr2[["Bucket", "Win %"]].copy()
+        wr_plot["Win %"] = wr_plot["Win %"].round(2)
+        wr_vals = _to_alt_values(wr_plot[["Bucket", "Win %"]])
 
     # Charts
     c_left, c_right = st.columns(2)
     with c_left:
         st.markdown("### Cumulative PnL (RR)")
         if pnl_vals:
-            area = alt.Chart(alt.Data(values=pnl_vals)).mark_area(opacity=0.12, color="#4800ff").encode(x=x_time, y=alt.Y('CumPnL:Q', title='Cumulative PnL (RR)'))
-            line = alt.Chart(alt.Data(values=pnl_vals)).mark_line(strokeWidth=2, color="#4800ff", interpolate='linear').encode(x=x_time, y='CumPnL:Q')
-            st.altair_chart(styler(alt.layer(area, line).properties(height=320)), use_container_width=True)
+            area = (
+                alt.Chart(alt.Data(values=pnl_vals))
+                .mark_area(opacity=0.12, color="#4800ff")
+                .encode(
+                    x=x_time,
+                    y=alt.Y("CumPnL:Q", title="Cumulative PnL (RR)"),
+                )
+            )
+            line = (
+                alt.Chart(alt.Data(values=pnl_vals))
+                .mark_line(strokeWidth=2, color="#4800ff", interpolate="linear")
+                .encode(x=x_time, y="CumPnL:Q")
+            )
+            st.altair_chart(
+                styler(alt.layer(area, line).properties(height=320)),
+                use_container_width=True,
+            )
         else:
             st.info("Not enough data for PnL chart.")
     with c_right:
         st.markdown("### Win Rate (%)")
         if wr_vals:
-            line_color = "#0f172a" if st.session_state.get("ui_theme","light") == "light" else "#e5e7eb"
-            xwr = alt.X('Bucket:T', title=None, axis=alt.Axis(format=axis_fmt, labelAngle=0, labelLimit=140), scale=alt.Scale(nice=False, padding=0))
-            line = alt.Chart(alt.Data(values=wr_vals)).mark_line(strokeWidth=2, color=line_color, interpolate='linear').encode(x=xwr, y=alt.Y('Win %:Q', title='Win Rate (%)', scale=alt.Scale(domain=[0,100]))).properties(height=320)
+            line_color = (
+                "#0f172a"
+                if st.session_state.get("ui_theme", "light") == "light"
+                else "#e5e7eb"
+            )
+            xwr = alt.X(
+                "Bucket:T",
+                title=None,
+                axis=alt.Axis(format=axis_fmt, labelAngle=0, labelLimit=140),
+                scale=alt.Scale(nice=False, padding=0),
+            )
+            line = (
+                alt.Chart(alt.Data(values=wr_vals))
+                .mark_line(
+                    strokeWidth=2,
+                    color=line_color,
+                    interpolate="linear",
+                )
+                .encode(
+                    x=xwr,
+                    y=alt.Y(
+                        "Win %:Q",
+                        title="Win Rate (%)",
+                        scale=alt.Scale(domain=[0, 100]),
+                    ),
+                )
+                .properties(height=320)
+            )
             st.altair_chart(styler(line), use_container_width=True)
         else:
             st.info("Not enough data for Win Rate chart.")
 
-    latest_wr = float(pd.DataFrame(wr_vals)['Win %'].dropna().iloc[-1]) if wr_vals else float('nan')
-    latest_eq = float(pd.DataFrame(pnl_vals)['CumPnL'].dropna().iloc[-1]) if pnl_vals else float('nan')
-    st.markdown(f"<div class='muted'>Latest Win %: <b>{latest_wr:.2f}%</b> &nbsp;|&nbsp; Cumulative PnL: <b>{latest_eq:,.2f} R</b></div>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    latest_wr = (
+        float(pd.DataFrame(wr_vals)["Win %"].dropna().iloc[-1]) if wr_vals else float("nan")
+    )
+    latest_eq = (
+        float(pd.DataFrame(pnl_vals)["CumPnL"].dropna().iloc[-1])
+        if pnl_vals
+        else float("nan")
+    )
+    st.markdown(
+        f"<div class='muted'>Latest Win %: <b>{latest_wr:.2f}%</b> &nbsp;|&nbsp; Cumulative PnL: <b>{latest_eq:,.2f} R</b></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
 # ------------------------------ Other tabs -----------------------------------
 def _entry_models_tab(f: pd.DataFrame, show_table):
@@ -315,7 +703,7 @@ def _entry_models_tab(f: pd.DataFrame, show_table):
 
     if f is None or f.empty:
         st.info("No trades for current filters.")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # Ensure we have a proper list column, regardless of template
@@ -323,15 +711,19 @@ def _entry_models_tab(f: pd.DataFrame, show_table):
 
     if "Entry Models List" not in f_norm.columns:
         st.info("No entry model data.")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # Keep only rows that have at least one model
     em = f_norm.copy()
-    em = em[em["Entry Models List"].apply(lambda x: isinstance(x, (list, tuple)) and len(x) > 0)]
+    em = em[
+        em["Entry Models List"].apply(
+            lambda x: isinstance(x, (list, tuple)) and len(x) > 0
+        )
+    ]
     if em.empty:
         st.info("No entry model data.")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # One row per model
@@ -339,13 +731,13 @@ def _entry_models_tab(f: pd.DataFrame, show_table):
     em = em[em["Entry Models List"].astype(str).str.strip() != ""]
     if em.empty:
         st.info("No entry model data.")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     counted = em[em["Outcome"].isin(["Win", "BE", "Loss"])]
     if counted.empty:
         st.info("No counted outcomes yet.")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     rates = []
@@ -355,7 +747,11 @@ def _entry_models_tab(f: pd.DataFrame, show_table):
             dict(
                 Entry_Model=str(model),
                 Trades=len(group),
-                **{"Win %": r["win_rate"], "BE %": r["be_rate"], "Loss %": r["loss_rate"]},
+                **{
+                    "Win %": r["win_rate"],
+                    "BE %": r["be_rate"],
+                    "Loss %": r["loss_rate"],
+                },
             )
         )
 
@@ -365,159 +761,373 @@ def _entry_models_tab(f: pd.DataFrame, show_table):
     else:
         st.info("No counted outcomes yet.")
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ---------- NEW: Confluence tab ----------------------------------------------
+def _confluences_tab(f: pd.DataFrame, show_table):
+    """
+    Confluence Performance tab:
+    - Uses DIV? and Sweep? columns (or Entry Confluence as fallback)
+    - Aggregates Trades / Win % / BE % / Loss % for:
+        DIV, Sweep, DIV & Sweep
+    """
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+
+    if f is None or f.empty:
+        st.info("No trades for current filters.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    g = f.copy()
+
+    # ---- Figure out which columns are DIV / Sweep (robust, avoids Divergence) ---
+    lower_map = {str(c).strip().lower(): c for c in g.columns}
+
+    def _norm_name(name: str) -> str:
+        # strip everything except letters and lowercase
+        return re.sub(r"[^a-z]", "", name.lower())
+
+    div_col_name = None
+    sweep_col_name = None
+    for key, col in lower_map.items():
+        norm = _norm_name(key)
+        if norm == "div" and div_col_name is None:
+            div_col_name = col
+        if norm == "sweep" and sweep_col_name is None:
+            sweep_col_name = col
+
+    # ---- Derive a 'Confluence' label per row --------------------------------
+    def _from_yes_no(val) -> bool:
+        if val is None:
+            return False
+        if isinstance(val, float) and pd.isna(val):
+            return False
+        s = str(val).strip().lower()
+        return s in {"yes", "y", "true", "1"}
+
+    def _classify_row(row):
+        # Primary path: separate DIV / Sweep columns (your new template)
+        if div_col_name is not None or sweep_col_name is not None:
+            div_flag = _from_yes_no(row.get(div_col_name)) if div_col_name is not None else False
+            sweep_flag = _from_yes_no(row.get(sweep_col_name)) if sweep_col_name is not None else False
+
+            if div_flag and sweep_flag:
+                return "DIV & Sweep"
+            if div_flag and not sweep_flag:
+                return "DIV"
+            if sweep_flag and not div_flag:
+                return "Sweep"
+            return None
+
+        # Fallback: single Entry Confluence-like column (old style)
+        for col_name in ["Entry Confluence", "Confluence"]:
+            if col_name in row.index:
+                v = row[col_name]
+                if isinstance(v, (list, tuple, set)):
+                    items = [str(x).strip().lower() for x in v]
+                else:
+                    s = str(v)
+                    items = [p.strip().lower() for p in re.split(r"[;,/|+]", s) if p.strip()]
+
+                has_div = any("div" in it for it in items)
+                has_sweep = any("sweep" in it for it in items)
+
+                if has_div and has_sweep:
+                    return "DIV & Sweep"
+                if has_div and not has_sweep:
+                    return "DIV"
+                if has_sweep and not has_div:
+                    return "Sweep"
+                return None
+
+        return None
+
+    g["Confluence"] = g.apply(_classify_row, axis=1)
+    g = g[g["Confluence"].notna()]
+    if g.empty:
+        st.info("No DIV / Sweep confluence data in current slice.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Only counted outcomes
+    counted = g[g["Outcome"].isin(["Win", "BE", "Loss"])]
+    if counted.empty:
+        st.info("No counted outcomes yet for any confluence.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # ---- Aggregate to DIV / Sweep / DIV & Sweep -----------------------------
+    rows = []
+    for conf in CONFLUENCE_OPTIONS:
+        sub = counted[counted["Confluence"] == conf]
+        if sub.empty:
+            continue
+        r = outcome_rates_from(sub)
+        rows.append(
+            dict(
+                Confluence=conf,
+                Trades=len(sub),
+                **{
+                    "Win %": r["win_rate"],
+                    "BE %": r["be_rate"],
+                    "Loss %": r["loss_rate"],
+                },
+            )
+        )
+
+    if rows:
+        conf_df = (
+            pd.DataFrame(rows)
+            .sort_values("Win %", ascending=False)
+            .reset_index(drop=True)
+        )
+        # Reuse Entry Model layout by renaming the label column
+        conf_df = conf_df.rename(columns={"Confluence": "Entry_Model"})
+        render_entry_model_table(conf_df, title="Confluence Performance")
+    else:
+        st.info("No confluence stats available.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
 def _sessions_tab(f: pd.DataFrame, show_table):
     st.markdown('<div class="section">', unsafe_allow_html=True)
     # Title comes from the renderer
-    if f.empty or 'Session Norm' not in f.columns or f['Session Norm'].isna().all():
+    if f.empty or "Session Norm" not in f.columns or f["Session Norm"].isna().all():
         st.info("No session data.")
     else:
-        counted = f[f['Outcome'].isin(['Win','BE','Loss'])]
-        rates=[]
-        for sess, g in counted.groupby('Session Norm'):
+        counted = f[f["Outcome"].isin(["Win", "BE", "Loss"])]
+        rates = []
+        for sess, g in counted.groupby("Session Norm"):
             r = outcome_rates_from(g)
-            rates.append(dict(Session=sess, Trades=len(g), **{"Win %": r['win_rate'], "BE %": r['be_rate'], "Loss %": r['loss_rate']}))
-        session_df = pd.DataFrame(rates).sort_values('Win %', ascending=False)
+            rates.append(
+                dict(
+                    Session=sess,
+                    Trades=len(g),
+                    **{
+                        "Win %": r["win_rate"],
+                        "BE %": r["be_rate"],
+                        "Loss %": r["loss_rate"],
+                    },
+                )
+            )
+        session_df = pd.DataFrame(rates).sort_values("Win %", ascending=False)
         render_session_performance_table(session_df, title="Session Performance")
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ---------- NEW: Instruments tab (performance by instrument/pair) ------------
+def _instruments_tab(f: pd.DataFrame, show_table):
+    """
+    Performance by instrument/pair.
+
+    - Normalizes an 'Instrument' column from Instrument/Pair/Symbol/Ticker/Market.
+    - Uses only rows in the provided slice (already completion-aware via _prep_perf_df).
+    - Computes win / BE / loss rate per instrument and shows it in the same
+    card style as Entry Model Performance.
+    """
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+
+    if f is None or f.empty:
+        st.info("No trades for current filters.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Normalise the Instrument column (Pair / Symbol / Ticker / Market → Instrument)
+    g = _ensure_instrument_column(f)
+    if "Instrument" not in g.columns:
+        st.info(
+            "No instrument/pair column detected (Instrument/Pair/Symbol/Ticker/Market)."
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    g = g.copy()
+    g["Instrument"] = g["Instrument"].astype(str).str.strip()
+    g = g[g["Instrument"] != ""]
+    if g.empty:
+        st.info("No instrument values present.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Only counted outcomes
+    counted = g[g["Outcome"].isin(["Win", "BE", "Loss"])]
+    if counted.empty:
+        st.info("No counted outcomes yet for any instrument.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Build the same style table as Entry Models: Instrument | Trades | Win % | BE % | Loss %
+    rows = []
+    for inst, g_inst in counted.groupby("Instrument"):
+        r = outcome_rates_from(g_inst)
+        rows.append(
+            dict(
+                Instrument=_asset_label(inst),
+                Trades=len(g_inst),
+                **{
+                    "Win %": r["win_rate"],
+                    "BE %": r["be_rate"],
+                    "Loss %": r["loss_rate"],
+                },
+            )
+        )
+
+    if rows:
+        instrument_df = (
+            pd.DataFrame(rows)
+            .sort_values("Win %", ascending=False)
+            .reset_index(drop=True)
+        )
+        # Use the same renderer as Entry Models to match theme/colours
+        render_entry_model_table(instrument_df, title="Asset Performance")
+    else:
+        st.info("No instrument stats available.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
 # ---------- Days-only (Mon–Fri), no hours/duration in this tab ----------
 def _time_days_tab(f: pd.DataFrame, show_table):
     st.markdown('<div class="section">', unsafe_allow_html=True)
     # Title comes from the renderer
-    counted = f[f['Outcome'].isin(['Win','BE','Loss'])]
+    counted = f[f["Outcome"].isin(["Win", "BE", "Loss"])]
 
     # Prefer DayName if present; else fall back to a 'Day' column
-    day_col = 'DayName' if 'DayName' in counted.columns else ('Day' if 'Day' in counted.columns else None)
+    day_col = "DayName" if "DayName" in counted.columns else ("Day" if "Day" in counted.columns else None)
     if not day_col or counted.empty:
         st.info("No day-of-week signal in current slice.")
-        st.markdown('</div>', unsafe_allow_html=True); return
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
     order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     df_days = counted[counted[day_col].isin(order)].copy()
     if df_days.empty:
         st.info("No Mon–Fri data in current slice.")
-        st.markdown('</div>', unsafe_allow_html=True); return
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
-    df_days['__Day'] = pd.Categorical(df_days[day_col], categories=order, ordered=True)
+    df_days["__Day"] = pd.Categorical(df_days[day_col], categories=order, ordered=True)
 
-    perf = (df_days.groupby('__Day').apply(lambda g: pd.Series({
-        "Trades": len(g),
-        "Win %": round((g['Outcome'].eq("Win").mean() * 100.0), 2),
-        "BE %":  round((g['Outcome'].eq("BE").mean()  * 100.0), 2),
-        "Loss %":round((g['Outcome'].eq("Loss").mean()* 100.0), 2),
-        "Avg RR": round(g['Closed RR'].mean(), 2) if 'Closed RR' in g.columns else None
-    })).reset_index().rename(columns={'__Day': 'Day'}))
+    perf = (
+        df_days.groupby("__Day")
+        .apply(
+            lambda g: pd.Series(
+                {
+                    "Trades": len(g),
+                    "Win %": round((g["Outcome"].eq("Win").mean() * 100.0), 2),
+                    "BE %": round((g["Outcome"].eq("BE").mean() * 100.0), 2),
+                    "Loss %": round((g["Outcome"].eq("Loss").mean() * 100.0), 2),
+                    "Avg RR": round(g["Closed RR"].mean(), 2)
+                    if "Closed RR" in g.columns
+                    else None,
+                }
+            )
+        )
+        .reset_index()
+        .rename(columns={"__Day": "Day"})
+    )
 
-    day_df = perf.sort_values('Day')
+    day_df = perf.sort_values("Day")
     render_day_performance_table(day_df, title="Day Performance (Mon–Fri)")
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------- (Unused for now) Confluence & Coach tabs kept for later ----------
-def _confluence_tab(f: pd.DataFrame, show_table):
-    # kept for future use; not referenced in render_all_tabs
-    st.markdown('<div class="section">', unsafe_allow_html=True)
-    st.markdown("### Confluence: DIV, Sweep, DIV & Sweep")
-    st.info("This tab is disabled for now.")
-    st.markdown('</div>', unsafe_allow_html=True)
 
 def _coach_tab(f: pd.DataFrame):
     # kept for future use; not referenced in render_all_tabs
     st.markdown('<div class="section">', unsafe_allow_html=True)
     st.markdown("## Edge Coach (disabled for now)")
     st.info("Coach is hidden for now.")
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-# ----------------------- Data tab (uses FILTERED-ALL) -----------------------
-def _data_tab(f_all: pd.DataFrame, show_table):
+
+# ----------------------- Data tab helpers (ALL instruments, rows of 3) --------
+def _render_data_completeness_by_instrument(f_all: pd.DataFrame):
     """
-    Show counts of data entries for NASDAQ, GOLD and AUDUSD with
-    'Complete' vs 'Incomplete' totals.
+    Show completeness cards for EVERY instrument with at least one row.
+    Arranged in rows of 3 cards. Uses existing app styles (kpi/label/value/muted).
     """
-    st.markdown('<div class="section">', unsafe_allow_html=True)
     st.markdown("### Data Completeness by Instrument")
 
     if f_all is None or f_all.empty:
         st.info("No rows for the current filters.")
-        st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    # Normalize/derive Instrument first
+    # Normalize/derive Instrument
     g = _ensure_instrument_column(f_all.copy())
-
-    if "Instrument" not in g.columns or g["Instrument"].isna().all() or (g["Instrument"].astype(str).str.strip() == "").all():
+    if "Instrument" not in g.columns:
         st.info("No instrument-like column found (looked for Instrument/Pair/Symbol/Ticker).")
-        st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    # Map to the three buckets we care about
-    def _bucket(val: str) -> str | None:
-        s = (str(val) if val is not None else "").upper().strip()
-        s_simple = re.sub(r"[^A-Z0-9]", "", s)
-
-        # GOLD
-        if s_simple in {"XAUUSD", "GOLD"} or "GOLD" in s_simple:
-            return "GOLD"
-
-        # NASDAQ family
-        if s_simple in {"US100", "NAS100", "NASDAQ", "NQ"} or "NAS" in s_simple or "US100" in s_simple or "NQ" in s_simple:
-            return "NASDAQ"
-
-        # AUDUSD
-        if "AUDUSD" in s_simple:
-            return "AUDUSD"
-
-        return None
-
-    g["__bucket"] = g["Instrument"].apply(_bucket)
-    g = g[g["__bucket"].notna()]
+    # Drop blanks
+    g["Instrument"] = g["Instrument"].astype(str).str.strip()
+    g = g[g["Instrument"] != ""]
     if g.empty:
-        st.info("No entries matched NASDAQ, GOLD or AUDUSD in the current slice.")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.info("No instrument values present.")
         return
 
-    # Completeness (robust to missing cols)
+    # Define completeness robustly
     if "Is Complete" in g.columns:
-        g["__complete"] = g["Is Complete"].fillna(False)
+        g["__complete"] = g["Is Complete"].fillna(False).astype(bool)
     elif {"Outcome Canonical", "Closed RR Num"} <= set(g.columns):
         has_outcome = g["Outcome Canonical"].isin(["Win", "BE", "Loss"])
         has_rr = g["Closed RR Num"].notna()
         has_date = g["Date"].notna() if "Date" in g.columns else True
-        g["__complete"] = has_date & has_outcome & has_rr
+        g["__complete"] = (has_date & has_outcome & has_rr).fillna(False)
     else:
         has_closed_rr = g["Closed RR"].notna() if "Closed RR" in g.columns else False
-        has_result = g["Result"].astype(str).str.strip().ne("").fillna(False) if "Result" in g.columns else False
+        has_result = (
+            g["Result"].astype(str).str.strip().ne("").fillna(False)
+            if "Result" in g.columns
+            else False
+        )
         has_pnl = g["PnL"].notna() if "PnL" in g.columns else False
         has_date = g["Date"].notna() if "Date" in g.columns else False
-        g["__complete"] = has_date & (has_closed_rr | has_result | has_pnl)
+        g["__complete"] = (has_date & (has_closed_rr | has_result | has_pnl)).fillna(False)
 
-    wanted = ["NASDAQ", "GOLD", "AUDUSD"]
-    out_rows = []
-    for name in wanted:
-        sub = g[g["__bucket"] == name]
-        total = int(len(sub))
-        complete = int(sub["__complete"].sum()) if total else 0
-        incomplete = total - complete
-        out_rows.append({"Instrument": name, "Total": total, "Complete": complete, "Incomplete": incomplete})
+    # Aggregate per instrument
+    agg = (
+        g.groupby("Instrument", dropna=False)
+        .agg(total=("Instrument", "size"), complete=("__complete", "sum"))
+        .reset_index()
+    )
+    agg["incomplete"] = agg["total"] - agg["complete"]
 
-    c1, c2, c3 = st.columns(3)
-    cols = [c1, c2, c3]
-    for col, row in zip(cols, out_rows):
-        with col:
-            st.markdown(
-                f"""
-                <div class='kpi'>
-                  <div class='label'>{row["Instrument"]}</div>
-                  <div class='value'>{row["Total"]}</div>
-                  <div class='muted'>Complete: <b>{row["Complete"]}</b></div>
-                  <div class='muted'>Incomplete: <b>{row["Incomplete"]}</b></div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    # Sort alphabetically for predictable layout (or by total desc)
+    agg = agg.sort_values(["Instrument"]).reset_index(drop=True)
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Render cards 3-per-row
+    per_row = 3
+    for i in range(0, len(agg), per_row):
+        chunk = agg.iloc[i : i + per_row]
+        cols = st.columns(len(chunk))
+        for col, (_, r) in zip(cols, chunk.iterrows()):
+            with col:
+                label = _asset_label(r["Instrument"])
+                st.markdown(
+                    f"""
+                    <div class='kpi'>
+                      <div class='label'>{label}</div>
+                      <div class='value' style='color:#4800ff'>{int(r["total"])}</div>
+                      <div class='muted'>Complete: <b>{int(r["complete"])}</b></div>
+                      <div class='muted'>Incomplete: <b>{int(r["incomplete"])}</b></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+# ----------------------- Data tab (uses FILTERED-ALL) -----------------------
+def _data_tab(f_all: pd.DataFrame, show_table):
+    """
+    Show counts of data entries per Instrument with 'Complete' vs 'Incomplete' totals.
+    Displays ALL instruments present, in rows of 3 cards.
+    """
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+    _render_data_completeness_by_instrument(f_all)
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
 # ----------------------- PATCH: Connect Notion templates UI -------------------
 def render_connect_notion_templates_ui():
@@ -534,7 +1144,7 @@ def render_connect_notion_templates_ui():
                 data=p1.read_bytes(),
                 file_name="my_template.csv",
                 mime="text/csv",
-                use_container_width=True
+                use_container_width=True,
             )
         else:
             st.warning("Missing: assets/templates/my_template.csv")
@@ -548,7 +1158,7 @@ def render_connect_notion_templates_ui():
                 data=p2.read_bytes(),
                 file_name="tradingpools_template.csv",
                 mime="text/csv",
-                use_container_width=True
+                use_container_width=True,
             )
         else:
             st.warning("Missing: assets/templates/tradingpools_template.csv")
@@ -557,8 +1167,8 @@ def render_connect_notion_templates_ui():
     st.subheader("Upload your filled template")
     up = st.file_uploader(
         "CSV/TSV/XLSX supported. Both templates work.",
-        type=["csv","tsv","xlsx","xls"],
-        key="upload_templates_dual"
+        type=["csv", "tsv", "xlsx", "xls"],
+        key="upload_templates_dual",
     )
 
     if up:
@@ -572,24 +1182,30 @@ def render_connect_notion_templates_ui():
         if mapping_name:
             st.success(f"Detected template: **{mapping_name}**")
         else:
-            st.warning("No mapping detected. Add a JSON mapping under config/templates/ if needed.")
+            st.warning(
+                "No mapping detected. Add a JSON mapping under config/templates/ if needed."
+            )
 
         # quick sanity checks
         issues = []
-        for col in ["Date","Pair","Outcome","Closed RR","Is Complete"]:
+        for col in ["Date", "Pair", "Outcome", "Closed RR", "Is Complete"]:
             if col not in df.columns:
                 issues.append(f"Missing required column: {col}")
         if "Outcome" in df.columns:
-            bad = ~df["Outcome"].isin(["Win","BE","Loss"]) & df["Outcome"].notna()
+            bad = ~df["Outcome"].isin(["Win", "BE", "Loss"]) & df["Outcome"].notna()
             if bad.any():
-                issues.append(f"Unexpected Outcome values: {list(df.loc[bad,'Outcome'].astype(str).unique()[:5])}")
+                issues.append(
+                    "Unexpected Outcome values: "
+                    + str(list(df.loc[bad, "Outcome"].astype(str).unique()[:5]))
+                )
 
         if issues:
             st.info("Checks:\n\n- " + "\n- ".join(issues))
 
         st.dataframe(df.head(25), use_container_width=True)
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
 # ----------------------- UPDATED render_all_tabs (Losing Streaks removed) ----
 def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
@@ -598,8 +1214,8 @@ def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
     df_all_safe = df_all.copy() if df_all is not None else df_all
 
     # 🔥 Dashboard tabs WITHOUT “Connect Notion” and WITHOUT “Losing Streaks”
-    t1, t2, t3, t4, t5 = st.tabs(
-        ["Growth", "Entry Models", "Sessions", "Time & Days", "Data"]
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs(
+        ["Growth", "Entry Models", "Confluence", "Assets", "Sessions", "Days", "Data"]
     )
 
     with t1:
@@ -609,10 +1225,16 @@ def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
         _entry_models_tab(f_perf, show_table)
 
     with t3:
-        _sessions_tab(f_perf, show_table)
+        _confluences_tab(f_perf, show_table)
 
     with t4:
-        _time_days_tab(f_perf, show_table)      # Days only (Mon–Fri)
+        _instruments_tab(f_perf, show_table)
 
     with t5:
-        _data_tab(df_all_safe, show_table)      # filtered-all completeness
+        _sessions_tab(f_perf, show_table)
+
+    with t6:
+        _time_days_tab(f_perf, show_table)  # Days only (Mon–Fri)
+
+    with t7:
+        _data_tab(df_all_safe, show_table)  # filtered-all completeness
