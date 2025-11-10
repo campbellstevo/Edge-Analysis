@@ -733,6 +733,9 @@ def render_dashboard(mobile: bool):
     with st.spinner("Fetching trades from Notion…"):
         df = load_live_df(token, dbid)
 
+    # DEBUG: show how many rows the dashboard is actually seeing
+    st.caption(f"Debug: dashboard df shape = {df.shape}")
+
     # ---- Banner + CTA depending on connection status -------------------------
     if token and dbid:
         # Connected: keep the existing banner
