@@ -11,6 +11,7 @@ from urllib.parse import urlencode, urlparse  # PATCH: urlparse for DB link
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+from notion_client import Client  # <-- NEW
 
 # ---------------------------- import path for src/ ----------------------------
 _ROOT = Path(__file__).resolve().parent
@@ -142,6 +143,66 @@ st.markdown("""
   .stTabs [data-baseweb="tab"] { padding:5px 8px !important; }
   .stTabs [data-baseweb="tab"] p { font-size:13px !important; margin:0 !important; }
   .spacer-12 { height:6px !important; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- PATCH: Date picker visibility & outline fix ---
+st.markdown("""
+<style>
+/* Shell of the date input */
+[data-testid="stDateInput"] > div > div {
+  border-radius: 12px !important;
+  border: 1px solid #e5e7eb !important;
+  overflow: hidden !important;
+}
+
+/* Text field styling */
+[data-testid="stDateInput"] input {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Purple focus ring instead of black outline */
+[data-testid="stDateInput"] input:focus {
+  outline: 2px solid #4800ff !important;
+  box-shadow: 0 0 0 1px rgba(72,0,255,0.5) !important;
+}
+
+[data-testid="stDateInput"] div:focus {
+  outline: none !important;
+}
+
+/* Calendar popup base styles */
+[role="dialog"] [data-baseweb="datepicker"],
+[role="dialog"] [data-baseweb="calendar"] {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Calendar buttons (days / months / quick options) */
+[role="dialog"] [data-baseweb="calendar"] button {
+  background: transparent !important;
+  color: #0f172a !important;
+}
+
+/* Hover state */
+[role="dialog"] [data-baseweb="calendar"] button:hover {
+  background-color: rgba(148,163,184,0.18) !important;
+}
+
+/* Selected day / month / option */
+[role="dialog"] [data-baseweb="calendar"] button[aria-pressed="true"],
+[role="dialog"] [data-baseweb="calendar"] button[aria-label*="selected"] {
+  background-color: #4800ff !important;
+  color: #ffffff !important;
+}
+
+/* Labels in calendar (weekday headers, month labels) */
+[role="dialog"] [data-baseweb="calendar"] span {
+  color: #0f172a !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -797,8 +858,16 @@ def render_dashboard(mobile: bool):
         st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
         with st.container():
             st.markdown("### Navigation")
-            _ = st.selectbox("Page", ["Dashboard", "Connect Notion"],
-                             index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1, key="nav_page")
+            page_options = ["Dashboard", "Connect Notion", "Notion Debug"]
+            current_page = st.session_state.get("nav_page", "Dashboard")
+            if current_page not in page_options:
+                current_page = "Dashboard"
+            st.selectbox(
+                "Page",
+                page_options,
+                index=page_options.index(current_page),
+                key="nav_page",
+            )
             _ = st.selectbox("Layout", ["Desktop Layout", "Mobile Layout"],
                              index=1 if st.session_state.get("layout_choice", "Desktop Layout") == "Mobile Layout" else 0,
                              key="layout_choice")
@@ -878,6 +947,47 @@ def render_dashboard(mobile: bool):
         except Exception:
             pass
 
+# ------------------------ Notion debug page (NEW) -----------------------------
+def render_notion_debug_page():
+    st.title("Notion Debug")
+
+    token = st.session_state.get("override_NOTION_TOKEN")
+    dbid = st.session_state.get("override_DATABASE_ID")
+
+    st.write("override_NOTION_TOKEN set:", bool(token))
+    st.write("override_DATABASE_ID set:", bool(dbid))
+
+    if not token or not dbid:
+        st.error("Missing override_NOTION_TOKEN or override_DATABASE_ID in session_state.")
+        return
+
+    if st.button("Test databases.query()"):
+        # Show which notion_client we are really using
+        try:
+            import notion_client as nc  # type: ignore
+            st.write(
+                "notion_client module:",
+                getattr(nc, "__file__", "<?>"),
+                "version:",
+                getattr(nc, "__version__", "<?>"),
+            )
+        except Exception as e:
+            st.write("Could not introspect notion_client:", repr(e))
+
+        try:
+            client = Client(auth=token)
+            st.write("type(client.databases):", type(client.databases))
+
+            resp = client.databases.query(
+                database_id=dbid,
+                page_size=5,
+            )
+
+            st.write("Results in first page:", len(resp.get("results", [])))
+            st.json(resp)
+        except Exception as e:
+            st.exception(e)
+
 # --------------------------------- Router -------------------------------------
 
 def _detect_default_layout_index() -> int:
@@ -914,9 +1024,16 @@ def main() -> None:
 
     if layout_mode == "desktop":
         st.sidebar.markdown("## Settings")
-        st.sidebar.selectbox("Page", ["Dashboard", "Connect Notion"],
-                             index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1,
-                             key="nav_page")
+        page_options = ["Dashboard", "Connect Notion", "Notion Debug"]
+        current_page = st.session_state.get("nav_page", "Dashboard")
+        if current_page not in page_options:
+            current_page = "Dashboard"
+        st.sidebar.selectbox(
+            "Page",
+            page_options,
+            index=page_options.index(current_page),
+            key="nav_page",
+        )
         current_layout = st.session_state.get("layout_choice", "Desktop Layout")
         st.sidebar.selectbox(
             "Layout",
@@ -927,8 +1044,11 @@ def main() -> None:
     else:
         _inject_mobile_css(layout_mode)
 
-    if st.session_state.get("nav_page", "Dashboard") == "Connect Notion":
+    page = st.session_state.get("nav_page", "Dashboard")
+    if page == "Connect Notion":
         render_connect_page(mobile=(layout_mode == "mobile"))
+    elif page == "Notion Debug":
+        render_notion_debug_page()
     else:
         render_dashboard(mobile=(layout_mode == "mobile"))
 
