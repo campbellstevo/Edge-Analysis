@@ -130,6 +130,43 @@ def _build_confluence_from_flags_df(df: pd.DataFrame) -> Optional[pd.Series]:
 
     return df.apply(_calc, axis=1)
 
+# ---- helper to support different notion-client styles ----
+def _query_database(
+    client: Client,
+    database_id: str,
+    page_size: int,
+    start_cursor: Optional[str],
+):
+    """
+    Supports both:
+      - client.databases.query(...)
+      - client.databases(...)
+    depending on notion-client version.
+    """
+    dbs = client.databases
+    query_attr = getattr(dbs, "query", None)
+
+    if callable(query_attr):
+        # Classic / older style
+        return query_attr(
+            database_id=database_id,
+            page_size=page_size,
+            start_cursor=start_cursor,
+        )
+
+    if callable(dbs):
+        # Some versions expose DatabasesEndpoint as callable
+        return dbs(
+            database_id=database_id,
+            page_size=page_size,
+            start_cursor=start_cursor,
+        )
+
+    # If neither interface exists, raise a clear error
+    raise AttributeError(
+        "Notion client 'databases' endpoint has no 'query' method or callable interface."
+    )
+
 # ---- main loader ----
 def load_trades_from_notion(
     token: Optional[str],
@@ -152,21 +189,14 @@ def load_trades_from_notion(
 
     while True:
         try:
-            resp = client.databases.query(
+            resp = _query_database(
+                client=client,
                 database_id=database_id,
                 page_size=page_size,
                 start_cursor=next_cursor,
             )
-        except AttributeError as e:
-            # Most likely a notion-client version mismatch
-            print(
-                "[edge_analysis] Notion client has no 'databases.query' attribute. "
-                "Update the 'notion-client' package to a recent version. "
-                f"Underlying error: {e}"
-            )
-            return pd.DataFrame()
         except Exception as e:
-            # Any other API / network error
+            # Any API / version / network error
             print(f"[edge_analysis] Error querying Notion database {database_id}: {e}")
             return pd.DataFrame()
 
