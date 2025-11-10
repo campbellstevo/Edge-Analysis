@@ -517,7 +517,7 @@ def _connect_page_css():
             padding:12px 14px !important; font-size:15px !important;
         }}
 
-        .ea-watermark {{ position:fixed; right:18px; bottom:18px; opacity:.18; z-index:0; pointer-events:none; }}
+        .ea-watermark {{ position:fixed; right:18px; bottom:6px; opacity:.18; z-index:0; pointer-events:none; }}
         .ea-watermark img {{ width:160px; max-width:28vw; }}
 
         @media (max-width: 800px) {{
@@ -647,7 +647,11 @@ def render_connect_page(mobile: bool):
                     else:
                         st.error(f"Couldn’t verify the database. {info}")
 
-        st.caption("Tip: You can also prefill via URL query params like `?notion_token=...&database_id=...`")
+        st.markdown('<div class="ea-divider"></div>', unsafe_allow_html=True)
+        if st.button("Return to Dashboard", key="btn_return_dashboard_connect", use_container_width=True):
+            st.session_state["nav_page_target"] = "Dashboard"
+            _st_rerun()
+
         st.markdown('</div>', unsafe_allow_html=True)  # end big card
 
         # Watermark
@@ -683,7 +687,7 @@ def render_dashboard(mobile: bool):
         [data-testid="stSidebar"] * {{ color:#0f172a !important; }}
 
         /* Dashboard watermark */
-        .ea-watermark {{ position:fixed; right:18px; bottom:18px; opacity:.18; z-index:0; pointer-events:none; }}
+        .ea-watermark {{ position:fixed; right:18px; bottom:6px; opacity:.18; z-index:0; pointer-events:none; }}
         .ea-watermark img {{ width:160px; max-width:28vw; }}
 
         /* Empty-state hero */
