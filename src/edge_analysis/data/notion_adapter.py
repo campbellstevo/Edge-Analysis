@@ -131,17 +131,45 @@ def _build_confluence_from_flags_df(df: pd.DataFrame) -> Optional[pd.Series]:
     return df.apply(_calc, axis=1)
 
 # ---- main loader ----
-def load_trades_from_notion(token: str, database_id: str, page_size: int = 100) -> pd.DataFrame:
-    client = Client(auth=token)
+def load_trades_from_notion(
+    token: Optional[str],
+    database_id: Optional[str],
+    page_size: int = 100,
+) -> pd.DataFrame:
+    # Safety: if creds are missing, don't even try
+    if not token or not database_id:
+        return pd.DataFrame()
+
+    try:
+        client = Client(auth=token)
+    except Exception as e:
+        # Log to Streamlit/Cloud logs but don't crash the app
+        print(f"[edge_analysis] Failed to create Notion client: {e}")
+        return pd.DataFrame()
 
     results: List[Dict[str, Any]] = []
     next_cursor: Optional[str] = None
+
     while True:
-        resp = client.databases.query(
-            database_id=database_id,
-            page_size=page_size,
-            start_cursor=next_cursor
-        )
+        try:
+            resp = client.databases.query(
+                database_id=database_id,
+                page_size=page_size,
+                start_cursor=next_cursor,
+            )
+        except AttributeError as e:
+            # Most likely a notion-client version mismatch
+            print(
+                "[edge_analysis] Notion client has no 'databases.query' attribute. "
+                "Update the 'notion-client' package to a recent version. "
+                f"Underlying error: {e}"
+            )
+            return pd.DataFrame()
+        except Exception as e:
+            # Any other API / network error
+            print(f"[edge_analysis] Error querying Notion database {database_id}: {e}")
+            return pd.DataFrame()
+
         results.extend(resp.get("results", []))
         if not resp.get("has_more"):
             break
