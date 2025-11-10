@@ -251,8 +251,12 @@ def inject_soft_bg():
         """
         <style>
           :root { --ea-bg-soft: #f5f6fb; }
-          [data-testid="stAppViewContainer"] { background: var(--ea-bg_soft) !important; }
-          header[data-testid="stHeader"], [data-testid="stToolbar"] { background: var(--ea-bg_soft) !important; }
+          [data-testid="stAppViewContainer"] { background: var(--ea-bg-soft) !important; }
+          header[data-testid="stHeader"], [data-testid="stToolbar"] {
+            background: var(--ea-bg-soft) !important;
+            border-bottom: none !important;
+            box-shadow: none !important;
+          }
           [data-testid="stSidebar"] { background: #ffffff !important; }
           [data-testid="stSidebar"] * { color: #0f172a !important; }
         </style>
@@ -744,6 +748,7 @@ def render_dashboard(mobile: bool):
                 ):
                     # Set target page for next run (avoid writing nav_page after widget)
                     st.session_state["nav_page_target"] = "Connect Notion"
+                    # Layout stays whatever it currently is (desktop/mobile)
                     _st_rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
         return
@@ -761,11 +766,24 @@ def render_dashboard(mobile: bool):
     em_opts = ["All"] + MODEL_SET
     sess_opts = ["All"] + sorted(set(SESSION_CANONICAL) | set(df["Session Norm"].dropna().unique()))
 
+    # --- NEW: date range defaults (for sidebar/mobile date filter) ---
+    if "Date" in df.columns:
+        min_date = df["Date"].min().date()
+        max_date = df["Date"].max().date()
+    else:
+        from datetime import date as _date
+        min_date = max_date = _date.today()
+
     if not mobile:
         st.sidebar.markdown("### Filters")
         sel_inst = st.sidebar.selectbox("Instrument", inst_opts, index=0, format_func=_inst_label, key="filters_inst_select")
         sel_em = st.sidebar.selectbox("Entry Model", em_opts, index=0, format_func=lambda x: x, key="filters_em_select")
         sel_sess = st.sidebar.selectbox("Session", sess_opts, index=0, format_func=lambda x: x, key="filters_sess_select")
+        date_range = st.sidebar.date_input(
+            "Date range",
+            value=st.session_state.get("filters_date_range", (min_date, max_date)),
+            key="filters_date_range",
+        )
     else:
         st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
         with st.container():
@@ -791,11 +809,27 @@ def render_dashboard(mobile: bool):
                                   index=em_opts.index(st.session_state.get("filters_em_select", "All"))
                                   if st.session_state.get("filters_em_select", "All") in em_opts else 0,
                                   key="filters_em_select")
+            date_range = st.date_input(
+                "Date range",
+                value=st.session_state.get("filters_date_range", (min_date, max_date)),
+                key="filters_date_range",
+            )
 
     mask = pd.Series(True, index=df.index)
     if sel_inst != "All": mask &= (df["Instrument"] == sel_inst)
     if sel_em != "All": mask &= df["Entry Models List"].apply(lambda lst: sel_em in lst if isinstance(lst, list) else False)
     if sel_sess != "All": mask &= (df["Session Norm"] == sel_sess)
+
+    # --- NEW: apply date range mask ---
+    from datetime import date as _date_type
+    if isinstance(date_range, (list, tuple)):
+        if len(date_range) == 2:
+            start, end = date_range
+            if isinstance(start, _date_type) and isinstance(end, _date_type):
+                mask &= df["Date"].dt.date.between(start, end)
+    elif isinstance(date_range, _date_type):
+        # single date selected
+        mask &= df["Date"].dt.date == date_range
 
     f = df[mask].copy()
     f["PnL_from_RR"] = f["Closed RR"].fillna(0.0)
@@ -847,12 +881,19 @@ def main() -> None:
     inject_soft_bg()
     inject_label_fix()
 
+    # Seed layout choice from query param on first run
     if "layout_choice" not in st.session_state:
         st.session_state["layout_choice"] = "Desktop Layout" if _detect_default_layout_index() == 0 else "Mobile Layout"
-    if "nav_page" not in st.session_state:
-        st.session_state["nav_page"] = "Dashboard"
 
-    # NEW: promote nav_page_target -> nav_page before any nav_page widgets
+    # Seed nav_page from query param on first run (so ?page=connect opens Connect Notion)
+    if "nav_page" not in st.session_state:
+        qp_page = (_get_query_param("page") or "").lower()
+        if qp_page.startswith("connect"):
+            st.session_state["nav_page"] = "Connect Notion"
+        else:
+            st.session_state["nav_page"] = "Dashboard"
+
+    # promote nav_page_target -> nav_page before widgets
     if "nav_page_target" in st.session_state:
         st.session_state["nav_page"] = st.session_state.pop("nav_page_target")
 
@@ -866,8 +907,14 @@ def main() -> None:
         st.sidebar.selectbox("Page", ["Dashboard", "Connect Notion"],
                              index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1,
                              key="nav_page")
-        st.sidebar.selectbox("Layout", ["Desktop Layout", "Mobile Layout"],
-                             index=_detect_default_layout_index(), key="layout_choice")
+        # NEW: respect current layout_choice instead of re-reading query params
+        current_layout = st.session_state.get("layout_choice", "Desktop Layout")
+        st.sidebar.selectbox(
+            "Layout",
+            ["Desktop Layout", "Mobile Layout"],
+            index=0 if current_layout == "Desktop Layout" else 1,
+            key="layout_choice",
+        )
     else:
         _inject_mobile_css(layout_mode)
 
