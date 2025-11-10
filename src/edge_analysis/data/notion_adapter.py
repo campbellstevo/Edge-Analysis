@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import re
 import pandas as pd
+from notion_client.errors import APIResponseError
 from notion_client import Client
 
 # ---- simple property flattener (Notion → plain dict) ----
@@ -130,43 +131,6 @@ def _build_confluence_from_flags_df(df: pd.DataFrame) -> Optional[pd.Series]:
 
     return df.apply(_calc, axis=1)
 
-# ---- helper to support different notion-client styles ----
-def _query_database(
-    client: Client,
-    database_id: str,
-    page_size: int,
-    start_cursor: Optional[str],
-):
-    """
-    Supports both:
-      - client.databases.query(...)
-      - client.databases(...)
-    depending on notion-client version.
-    """
-    dbs = client.databases
-    query_attr = getattr(dbs, "query", None)
-
-    if callable(query_attr):
-        # Classic / older style
-        return query_attr(
-            database_id=database_id,
-            page_size=page_size,
-            start_cursor=start_cursor,
-        )
-
-    if callable(dbs):
-        # Some versions expose DatabasesEndpoint as callable
-        return dbs(
-            database_id=database_id,
-            page_size=page_size,
-            start_cursor=start_cursor,
-        )
-
-    # If neither interface exists, raise a clear error
-    raise AttributeError(
-        "Notion client 'databases' endpoint has no 'query' method or callable interface."
-    )
-
 # ---- main loader ----
 def load_trades_from_notion(
     token: Optional[str],
@@ -175,13 +139,40 @@ def load_trades_from_notion(
 ) -> pd.DataFrame:
     # Safety: if creds are missing, don't even try
     if not token or not database_id:
+        print("[edge_analysis] Missing Notion token or database_id.")
         return pd.DataFrame()
 
+    # Debug: which notion_client is actually imported?
+    try:
+        import notion_client as nc  # type: ignore
+        print(
+            "[edge_analysis] notion_client module:",
+            getattr(nc, "__file__", "<?>"),
+            "version:",
+            getattr(nc, "__version__", "<?>"),
+        )
+    except Exception as e:
+        print(f"[edge_analysis] Could not introspect notion_client module: {e!r}")
+
+    # Create client
     try:
         client = Client(auth=token)
     except Exception as e:
         # Log to Streamlit/Cloud logs but don't crash the app
-        print(f"[edge_analysis] Failed to create Notion client: {e}")
+        print(f"[edge_analysis] Failed to create Notion client: {e!r}")
+        return pd.DataFrame()
+
+    # Defensive checks around databases endpoint
+    if not hasattr(client, "databases"):
+        print(f"[edge_analysis] Client missing 'databases' attribute: {type(client)}")
+        return pd.DataFrame()
+
+    if not hasattr(client.databases, "query"):
+        print(
+            "[edge_analysis] client.databases has no 'query' method.",
+            "Type:", type(client.databases),
+            "Dir:", dir(client.databases),
+        )
         return pd.DataFrame()
 
     results: List[Dict[str, Any]] = []
@@ -189,15 +180,22 @@ def load_trades_from_notion(
 
     while True:
         try:
-            resp = _query_database(
-                client=client,
+            resp = client.databases.query(
                 database_id=database_id,
                 page_size=page_size,
                 start_cursor=next_cursor,
             )
+        except APIResponseError as e:
+            print(
+                f"[edge_analysis] APIResponseError while querying Notion DB {database_id}: "
+                f"status={getattr(e, 'status', None)}, "
+                f"code={getattr(e, 'code', None)}, "
+                f"message={getattr(e, 'message', None)}, "
+                f"body={getattr(e, 'body', None)}"
+            )
+            return pd.DataFrame()
         except Exception as e:
-            # Any API / version / network error
-            print(f"[edge_analysis] Error querying Notion database {database_id}: {e}")
+            print(f"[edge_analysis] Unexpected Notion query error: {e!r}")
             return pd.DataFrame()
 
         results.extend(resp.get("results", []))
@@ -208,7 +206,9 @@ def load_trades_from_notion(
     rows = [_flatten_props(r.get("properties", {})) for r in results]
     df = pd.DataFrame(rows)
     if df.empty:
-        return pd.DataFrame(columns=["Date", "Pair", "Session", "Entry Model", "Result", "Closed RR", "PnL"])
+        return pd.DataFrame(
+            columns=["Date", "Pair", "Session", "Entry Model", "Result", "Closed RR", "PnL", "Confluence"]
+        )
 
     out = pd.DataFrame()
     out["Date"] = pd.to_datetime(
@@ -229,7 +229,8 @@ def load_trades_from_notion(
     out["Result"]      = df.apply(lambda r: _first_nonempty(r, RESULT_FIELDS), axis=1)
     out["Closed RR"]   = df.apply(lambda r: parse_closed_rr(_first_nonempty(r, RR_FIELDS)), axis=1)
     out["PnL"]         = pd.to_numeric(
-        df.apply(lambda r: _first_nonempty(r, PNL_FIELDS), axis=1),
+        df.apply(lambda r: _first_nonempty(r, PNL_FIELDS),
+        axis=1),
         errors="coerce"
     )
 
