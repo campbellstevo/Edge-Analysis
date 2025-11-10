@@ -442,6 +442,8 @@ def _handle_oauth_callback() -> bool:
         if not access_token:
             raise RuntimeError("No access_token in Notion response")
         st.session_state["override_NOTION_TOKEN"] = access_token
+        # after integration connects, go to Connect Notion on next run
+        st.session_state["nav_page_target"] = "Connect Notion"
         st.success("Connected to Notion via OAuth")
         ws = data.get("workspace_name") or data.get("bot_id")
         if ws: st.caption(f"Workspace: {ws}")
@@ -543,7 +545,6 @@ def render_connect_page(mobile: bool):
 
         # Header exactly like mock
         st.markdown('<div class="ea-title">Connect Notion</div>', unsafe_allow_html=True)
-        # (Removed the descriptive subtitle under the title as requested)
 
         st.markdown('<div class="ea-card">', unsafe_allow_html=True)
 
@@ -577,6 +578,8 @@ def render_connect_page(mobile: bool):
                     st.error(f"OAuth token exchange failed: {e}")
                 finally:
                     st.session_state.pop("oauth_callback_code", None)
+                    # after finalize, go back to Connect Notion via target
+                    st.session_state["nav_page_target"] = "Connect Notion"
                     _st_rerun()
 
         c1, c2 = st.columns(2)
@@ -631,6 +634,9 @@ def render_connect_page(mobile: bool):
                 if ok:
                     st.success("Database verified")
                     st.session_state["override_DATABASE_ID"] = dbid
+                    # once database is connected, go straight to Dashboard
+                    st.session_state["nav_page_target"] = "Dashboard"
+                    _st_rerun()
                 else:
                     if status == 403:
                         st.warning("Access denied (403). In Notion, open the database → ⋯ → Add connections → choose your app/integration, then try again.")
@@ -748,7 +754,6 @@ def render_dashboard(mobile: bool):
                 ):
                     # Set target page for next run (avoid writing nav_page after widget)
                     st.session_state["nav_page_target"] = "Connect Notion"
-                    # Layout stays whatever it currently is (desktop/mobile)
                     _st_rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
         return
@@ -885,12 +890,13 @@ def main() -> None:
     if "layout_choice" not in st.session_state:
         st.session_state["layout_choice"] = "Desktop Layout" if _detect_default_layout_index() == 0 else "Mobile Layout"
 
-    # Seed nav_page from query param on first run (so ?page=connect opens Connect Notion)
+    # Seed nav_page from query param on first run
     if "nav_page" not in st.session_state:
         qp_page = (_get_query_param("page") or "").lower()
         if qp_page.startswith("connect"):
             st.session_state["nav_page"] = "Connect Notion"
         else:
+            # default to Dashboard when first entering the site
             st.session_state["nav_page"] = "Dashboard"
 
     # promote nav_page_target -> nav_page before widgets
@@ -907,7 +913,6 @@ def main() -> None:
         st.sidebar.selectbox("Page", ["Dashboard", "Connect Notion"],
                              index=0 if st.session_state.get("nav_page", "Dashboard") == "Dashboard" else 1,
                              key="nav_page")
-        # NEW: respect current layout_choice instead of re-reading query params
         current_layout = st.session_state.get("layout_choice", "Desktop Layout")
         st.sidebar.selectbox(
             "Layout",
