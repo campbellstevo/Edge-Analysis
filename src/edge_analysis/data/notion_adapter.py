@@ -73,20 +73,38 @@ def parse_closed_rr(x):
 
 # ---- main loader ----
 def load_trades_from_notion(token: str, database_id: str, page_size: int = 100) -> pd.DataFrame:
-    client = Client(auth=token)
+    # Validate inputs
+    if not token:
+        raise ValueError("Notion token is required but was not provided")
+    if not database_id:
+        raise ValueError("Database ID is required but was not provided")
+    
+    try:
+        client = Client(auth=token)
+    except Exception as e:
+        raise ValueError(f"Failed to initialize Notion client: {e}")
 
     results: List[Dict[str, Any]] = []
     next_cursor: Optional[str] = None
-    while True:
-        resp = client.databases.query(
-            database_id=database_id,
-            page_size=page_size,
-            start_cursor=next_cursor
+    
+    try:
+        while True:
+            resp = client.databases.query(
+                database_id=database_id,
+                page_size=page_size,
+                start_cursor=next_cursor
+            )
+            results.extend(resp.get("results", []))
+            if not resp.get("has_more"):
+                break
+            next_cursor = resp.get("next_cursor")
+    except AttributeError as e:
+        raise AttributeError(
+            f"Notion client error - this may be due to an outdated notion-client version. "
+            f"Please ensure notion-client>=2.0.0 is installed. Error: {e}"
         )
-        results.extend(resp.get("results", []))
-        if not resp.get("has_more"):
-            break
-        next_cursor = resp.get("next_cursor")
+    except Exception as e:
+        raise RuntimeError(f"Failed to query Notion database: {e}")
 
     rows = [_flatten_props(r.get("properties", {})) for r in results]
     df = pd.DataFrame(rows)
