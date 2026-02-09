@@ -1,0 +1,28 @@
+{
+  "columns": {
+    "Trade Date": "Date",
+    "Instrument": "Pair",
+    "Sess": "Session",
+    "Entry": "Entry Model",
+    "Conf": "Multi Entry Model Entry",
+    "Outcome": "Result",
+    "RR": "Closed RR",
+    "Profit": "PnL",
+    "Completed?": "Is Complete",
+    "Stars": "Stars",
+    "Comment": "Comment"
+  },
+  "coercions": {
+    "Date": "date",
+    "Closed RR": "float",
+    "PnL": "float",
+    "Is Complete": "bool"
+  },
+  "normalizers": {
+    "Result": {
+      "Win": ["win", "w", "profit", "✅", "Win"],
+      "BE": ["be", "break even", "0", "⚪", "BE"],
+      "Loss": ["loss", "l", "lose", "❌", "Loss"]
+    }
+  }
+}
