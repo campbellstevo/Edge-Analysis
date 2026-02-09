@@ -4,4 +4,4 @@ numpy
 altair
 python-dateutil
 requests
-notion-client>=2.0.0
+notion-client==2.2.1
