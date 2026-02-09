@@ -1,1 +1,33 @@
-﻿date,pair,session,entry_model,confluence,result,closed_rr,pnl,is_complete,stars,notes
+{
+  "columns": {
+    "Day/Time/Date of Trade": "Date",
+    "Pair": "Pair",
+    "Session": "Session",
+    "Entry Model": "Entry Model",
+    "Multi-Entry Model Setup": "Multi Entry Model Entry",
+    "Result": "Result",
+    "Closed RR": "Closed RR",
+    "DIV?": "DIV?",
+    "Sweep?": "Sweep?",
+    "GAP Alignment": "Gap Alignment",
+    "Targeted RR": "Target RR",
+    "Conditions ETF": "Conditions ETF",
+    "Conditions HTF": "Conditions HTF",
+    "Account": "Account",
+    "Trade Duration": "Trade Duration"
+  },
+  "coercions": {
+    "Date": "date",
+    "Closed RR": "float",
+    "PnL": "float",
+    "Is Complete": "bool"
+  },
+  "normalizers": {
+    "Result": {
+      "Win": ["win", "w", "profit", "✅", "Win"],
+      "BE": ["be", "break even", "0", "⚪", "BE"],
+      "Loss": ["loss", "l", "lose", "❌", "Loss"]
+    }
+  }
+}
+
