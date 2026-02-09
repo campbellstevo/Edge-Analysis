@@ -1,6 +1,14 @@
 from __future__ import annotations
-import os
 import sys
+from pathlib import Path
+
+# Add src directory to Python path FIRST (before any edge_analysis imports)
+_ROOT = Path(__file__).resolve().parent
+_SRC = _ROOT / "src"
+if _SRC.exists():
+    sys.path.insert(0, str(_SRC))
+
+import os
 import base64
 import secrets
 import requests
@@ -8,7 +16,6 @@ import hashlib
 import time
 import re
 from urllib.parse import urlencode, urlparse
-from pathlib import Path
 from typing import Optional, Union, Tuple
 from datetime import date as DateType
 import pandas as pd
@@ -16,12 +23,6 @@ import streamlit as st
 
 # Import theme functions up front for consolidated styling
 from edge_analysis.ui.theme import inject_theme, inject_header, setup_favicon, get_chart_styler
-
-# ---------------------------- import path for src/ ----------------------------
-_ROOT = Path(__file__).resolve().parent
-_SRC = _ROOT / "src"
-if _SRC.exists():
-    sys.path.insert(0, str(_SRC))
 
 # ------------------------------- Constants ------------------------------------
 BRAND_PURPLE = "#4800ff"
