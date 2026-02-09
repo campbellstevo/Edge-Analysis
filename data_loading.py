@@ -3,6 +3,15 @@ Data loading module for Edge Analysis.
 """
 
 from __future__ import annotations
+import sys
+from pathlib import Path
+
+# Add src directory to Python path
+_ROOT = Path(__file__).resolve().parent
+_SRC = _ROOT / "src"
+if _SRC.exists():
+    sys.path.insert(0, str(_SRC))
+
 from typing import Optional
 import pandas as pd
 import streamlit as st
