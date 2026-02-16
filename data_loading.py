@@ -3,15 +3,6 @@ Data loading module for Edge Analysis.
 """
 
 from __future__ import annotations
-import sys
-from pathlib import Path
-
-# Add src directory to Python path
-_ROOT = Path(__file__).resolve().parent
-_SRC = _ROOT / "src"
-if _SRC.exists():
-    sys.path.insert(0, str(_SRC))
-
 from typing import Optional
 import pandas as pd
 import streamlit as st
@@ -128,4 +119,7 @@ def load_live_df(token: Optional[str], dbid: Optional[str]) -> pd.DataFrame:
     else:
         has_signal = pd.Series(False, index=df.index)
 
-    return df[has_date & has_signal].copy()
+    # Keep all dated trades — completeness tab needs empty ones too
+    # Performance tabs filter to complete trades via _prep_perf_df
+    df["Is Complete"] = has_signal
+    return df[has_date].copy()
