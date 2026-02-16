@@ -235,8 +235,6 @@ def render_entry_model_table(df: pd.DataFrame, title: str = "Entry Model Perform
     st.markdown(table_html, unsafe_allow_html=True)
 
 
-
-
 # ------------------------------- OAuth & Connect ------------------------------
 @st.cache_resource
 def _oauth_store() -> dict:
@@ -583,9 +581,6 @@ def _connect_page_css():
             padding:12px 14px !important; font-size:15px !important;
         }}
 
-        .ea-watermark {{ position:fixed; right:18px; bottom:6px; opacity:.18; z-index:0; pointer-events:none; }}
-        .ea-watermark img {{ width:160px; max-width:28vw; }}
-
         @media (max-width: 800px) {{
           .ea-title {{ font-size:30px; }}
           .ea-step {{ font-size:19px; }}
@@ -630,7 +625,7 @@ def render_connect_page(mobile: bool):
             missing.append("Redirect URI")
         if missing:
             st.warning(
-                "OAuth secrets not fully configured: " + ", ".join(missing) + 
+                "OAuth secrets not fully configured: " + ", ".join(missing) +
                 ". Add either NOTION_OAUTH_* or NOTION_* to your `.streamlit/secrets.toml`."
             )
 
@@ -737,19 +732,6 @@ def render_connect_page(mobile: bool):
             _st_rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
-
-        # Watermark
-        logo_path = ASSETS_DIR / "edge_logo.png"
-        if logo_path.exists():
-            try:
-                _wm_b64 = base64.b64encode(logo_path.read_bytes()).decode()
-                st.markdown(
-                    f'<div class="ea-watermark"><img alt="Edge Analysis" src="data:image/png;base64,{_wm_b64}" /></div>',
-                    unsafe_allow_html=True,
-                )
-            except Exception:
-                pass
-
         st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -1014,8 +996,6 @@ def _apply_date_filter(df: pd.DataFrame, date_range: Optional[DateRange]) -> pd.
     return df["Date"].dt.date == date_range
 
 
-
-
 def render_dashboard(mobile: bool):
     """
     Render the main dashboard page.
@@ -1030,9 +1010,6 @@ def render_dashboard(mobile: bool):
         .live-banner {{ text-align:center; margin:-8px 0 16px 0; font-weight:800; font-size:22px; color:var(--brand); }}
         [data-testid="stSidebar"] {{ background:#fff !important; }}
         [data-testid="stSidebar"] * {{ color:#0f172a !important; }}
-
-        .ea-watermark {{ position:fixed; right:18px; bottom:6px; opacity:.18; z-index:0; pointer-events:none; }}
-        .ea-watermark img {{ width:160px; max-width:28vw; }}
 
         .ea-empty-wrap {{
             text-align:center;
@@ -1184,18 +1161,6 @@ def render_dashboard(mobile: bool):
 
     # Render tabs with data
     render_all_tabs(f, df, styler, show_light_table)
-
-    # Watermark
-    logo_path = ASSETS_DIR / "edge_logo.png"
-    if logo_path.exists():
-        try:
-            _wm_b64 = base64.b64encode(logo_path.read_bytes()).decode()
-            st.markdown(
-                f"<div class='ea-watermark'><img alt='Edge Analysis' src='data:image/png;base64,{_wm_b64}' /></div>",
-                unsafe_allow_html=True,
-            )
-        except Exception:
-            pass
 
 
 # --------------------------------- Router -------------------------------------
