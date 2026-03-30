@@ -14,6 +14,7 @@ from edge_analysis.ui.components import (
     render_entry_model_table,
     render_session_performance_table,
     render_day_performance_table,
+    render_timeframe_table,
 )
 
 # PATCH: auto-detect adapter for multiple templates
@@ -1441,6 +1442,104 @@ def _conditions_tab(f: pd.DataFrame, show_table):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _timeframes_tab(f: pd.DataFrame, show_table):
+    """
+    Timeframes tab:
+    Groups by 'Timeframe' column and shows
+    Trades / Win % / BE % / Loss % / Avg RR / Profit Factor.
+    """
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+
+    if f is None or f.empty:
+        st.info("No trades for current filters.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Locate the Timeframe column (case-insensitive)
+    lower_map = {str(c).strip().lower(): c for c in f.columns}
+    tf_col = (
+        lower_map.get("entry timeframe")
+        or lower_map.get("timeframe")
+        or lower_map.get("time frame")
+        or lower_map.get("tf")
+    )
+    if tf_col is None:
+        st.info("No 'Timeframe' column found in current data.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    g = f.copy()
+    g["__TF"] = g[tf_col].astype(str).str.strip()
+    g = g[~g["__TF"].isin(["", "nan", "NaN", "None"])]
+    if g.empty:
+        st.info("No timeframe values present.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    counted = g[g["Outcome"].isin(["Win", "BE", "Loss"])]
+    if counted.empty:
+        st.info("No counted outcomes yet for any timeframe.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Define a sort key so common labels order naturally (1M < 5M < 15M < 1H < 4H < 1D …)
+    _TF_ORDER = {
+        "1m": 1, "2m": 2, "3m": 3, "5m": 5, "10m": 10, "15m": 15,
+        "30m": 30, "45m": 45,
+        "1h": 60, "2h": 120, "3h": 180, "4h": 240, "6h": 360, "8h": 480, "12h": 720,
+        "1d": 1440, "d": 1440, "daily": 1440,
+        "1w": 10080, "w": 10080, "weekly": 10080,
+        "1mo": 43200, "monthly": 43200,
+    }
+
+    def _tf_sort_key(label: str) -> float:
+        return _TF_ORDER.get(str(label).strip().lower(), 9999)
+
+    rows = []
+    for tf, group in counted.groupby("__TF"):
+        r = outcome_rates_from(group)
+
+        # Average RR (all counted trades, not wins-only)
+        rr_series = pd.to_numeric(group.get("Closed RR", pd.Series(dtype=float)), errors="coerce").dropna()
+        avg_rr = round(float(rr_series.mean()), 2) if not rr_series.empty else None
+
+        # Profit Factor = sum(winning RR) / abs(sum(losing RR))
+        wins_rr = rr_series[rr_series > 0].sum()
+        losses_rr = abs(rr_series[rr_series < 0].sum())
+        profit_factor = round(wins_rr / losses_rr, 2) if losses_rr > 0 else None
+
+        rows.append(
+            dict(
+                Timeframe=tf,
+                Trades=len(group),
+                **{
+                    "Win %": r["win_rate"],
+                    "BE %": r["be_rate"],
+                    "Loss %": r["loss_rate"],
+                    "Avg RR": avg_rr,
+                    "Profit Factor": profit_factor,
+                },
+            )
+        )
+
+    if not rows:
+        st.info("No timeframe stats available.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    tf_df = (
+        pd.DataFrame(rows)
+        .assign(_sort=lambda d: d["Timeframe"].apply(_tf_sort_key))
+        .sort_values(["_sort", "Timeframe"])
+        .drop(columns=["_sort"])
+        .reset_index(drop=True)
+        .rename(columns={"Timeframe": "Entry_Model"})
+    )
+
+    render_timeframe_table(tf_df, title="Timeframe Performance")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def _coach_tab(f: pd.DataFrame):
     # kept for future use; not referenced in render_all_tabs
     st.markdown('<div class="section">', unsafe_allow_html=True)
@@ -1474,24 +1573,11 @@ def _render_data_completeness_by_instrument(f_all: pd.DataFrame):
         st.info("No instrument values present.")
         return
 
-    # Define completeness robustly
-    if "Is Complete" in g.columns:
-        g["__complete"] = g["Is Complete"].fillna(False).astype(bool)
-    elif {"Outcome Canonical", "Closed RR Num"} <= set(g.columns):
-        has_outcome = g["Outcome Canonical"].isin(["Win", "BE", "Loss"])
-        has_rr = g["Closed RR Num"].notna()
-        has_date = g["Date"].notna() if "Date" in g.columns else True
-        g["__complete"] = (has_date & has_outcome & has_rr).fillna(False)
-    else:
-        has_closed_rr = g["Closed RR"].notna() if "Closed RR" in g.columns else False
-        has_result = (
-            g["Result"].astype(str).str.strip().ne("").fillna(False)
-            if "Result" in g.columns
-            else False
-        )
-        has_pnl = g["PnL"].notna() if "PnL" in g.columns else False
-        has_date = g["Date"].notna() if "Date" in g.columns else False
-        g["__complete"] = (has_date & (has_closed_rr | has_result | has_pnl)).fillna(False)
+    # Define completeness:
+    # Incomplete = "Closed RR" is missing/NaN
+    # Complete   = "Closed RR" has a real numeric value
+    closed_rr = pd.to_numeric(g["Closed RR"], errors="coerce") if "Closed RR" in g.columns else pd.Series(index=g.index, dtype=float)
+    g["__complete"] = closed_rr.notna()
 
     # Aggregate per instrument
     agg = (
@@ -1630,6 +1716,7 @@ def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
         t6,
         t7,
         t8,
+        t9,
     ) = st.tabs(
         [
             "Growth",
@@ -1639,6 +1726,7 @@ def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
             "Sessions",
             "Days",
             "Conditions",
+            "Timeframes",
             "Data",
         ]
     )
@@ -1665,4 +1753,7 @@ def render_all_tabs(f: pd.DataFrame, df_all: pd.DataFrame, styler, show_table):
         _conditions_tab(f_perf, show_table)
 
     with t8:
+        _timeframes_tab(f_perf, show_table)
+
+    with t9:
         _data_tab(df_all_safe, show_table)  # filtered-all completeness
